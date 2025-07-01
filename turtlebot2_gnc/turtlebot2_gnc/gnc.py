@@ -251,13 +251,14 @@ class GNCNode(Node):
         if best_direction is None:
             self.intermediate_goal = (self.x, self.y)
             self.get_logger().info(f"🔀 No Intermediate goal: {self.intermediate_goal}")
-
-
-        # Compute intermediate waypoint RADIUS meters away in chosen direction
-        new_x = x + RADIUS * math.cos(best_direction)
-        new_y = y + RADIUS * math.sin(best_direction)
-        self.intermediate_goal = (new_x, new_y)
-        self.get_logger().info(f"🔀 Intermediate goal: {self.intermediate_goal}")
+            return False
+        else:
+            # Compute intermediate waypoint RADIUS meters away in chosen direction
+            new_x = x + RADIUS * math.cos(best_direction)
+            new_y = y + RADIUS * math.sin(best_direction)
+            self.intermediate_goal = (new_x, new_y)
+            self.get_logger().info(f"🔀 Intermediate goal: {self.intermediate_goal}")
+            return True
 
     def control_loop(self):
         msg = Twist()
@@ -295,9 +296,11 @@ class GNCNode(Node):
 
         # === Step 2.5: Pick an intermediate goal
         if self.state == 'PICK_INTERMEDIATE':
-            self.pick_intermediate_waypoint()
-            self.state = 'NAVIGATE_TO_INTERMEDIATE'
-            self.intermediate_orientation_check = True
+            if self.pick_intermediate_waypoint():
+                self.state = 'NAVIGATE_TO_INTERMEDIATE'
+                self.intermediate_orientation_check = True
+            else:
+                self.state = 'SCAN_SURROUNDINGS'
         # === Step 3: Navigate to intermediate waypoint ===
         target = None
         if self.state == 'NAVIGATE_TO_INTERMEDIATE' and self.intermediate_goal:
