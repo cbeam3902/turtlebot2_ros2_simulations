@@ -10,7 +10,12 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/' + package_name, [package_name+'/gnc.py', package_name+'/random_explorer.py', package_name+'/__init__.py'])
+        ('share/' + package_name + '/' + package_name, [
+            package_name+'/gnc.py', 
+            package_name+'/random_explorer.py', 
+            package_name+'/__init__.py',
+            package_name+'/urad_classifier.pt'
+        ])
     ],
     install_requires=['setuptools'],
     zip_safe=True,

@@ -6,9 +6,25 @@ from sensor_msgs.msg import LaserScan  # or use radar equivalent
 import math
 import time
 import numpy as np
+import torch
+import torch.nn as nn
 
-from tf_transformations import euler_from_quaternion
+from scipy.spatial.transform import Rotation as R
+# from tf_transformations import euler_from_quaternion
 from tf2_ros import Buffer, TransformListener
+
+class SimpleClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # Binary output
+        )
+
+    def forward(self, x):
+        return self.model(x)
 
 class GNCNode(Node):
     def __init__(self):
@@ -21,6 +37,11 @@ class GNCNode(Node):
         self.scan_radius = 1.0
         self.scan_resolution_deg = 10
         self.obstacle_threshold = 0.7
+        self.nn_max_normalizer = 9.540007 # Obtained while training
+        self.nn_found_obstacle = False
+        self.model = SimpleClassifier()
+        self.model.load_state_dict(torch.load("/tmp/urad_classifier.pt"))
+        self.model.eval()
 
         # --- State ---
         self.state = 'NAVIGATE_TO_GOAL'
@@ -49,7 +70,9 @@ class GNCNode(Node):
         try:
             t = self.tf_buffer.lookup_transform("odom", "base_footprint", rclpy.time.Time())
             rot = t.transform.rotation
-            _, _, yaw = euler_from_quaternion([rot.x, rot.y, rot.z, rot.w])
+            r = R.from_quat([rot.x, rot.y, rot.z, rot.w])
+            _, _, yaw = r.as_euler('xyz', degrees=False)
+            # _, _, yaw = euler_from_quaternion([rot.x, rot.y, rot.z, rot.w])
             return yaw
         except Exception as e:
             self.get_logger().warn(f"TF lookup failed: {e}")
@@ -62,7 +85,9 @@ class GNCNode(Node):
         # siny = 2.0 * (q.w * q.z + q.x * q.y)
         # cosy = 1.0 - 2.0 * (q.y**2 + q.z**2)
         # self.yaw = math.atan2(siny, cosy)
-        _,_,yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+        r = R.from_quat([q.x, q.y, q.z, q.w])
+        _, _, yaw = r.as_euler('xyz', degrees=False)
+        # _,_,yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
         self.yaw = yaw
         # self.get_logger().info(f"Yaw updated: {math.degrees(self.yaw):.2f}")
 
@@ -234,12 +259,27 @@ class GNCNode(Node):
     def control_loop(self):
         msg = Twist()
 
+        # === Step 0: NN Classification ===
+        if self.scan_distance is not None:
+            tmp_distance = self.scan_distance / self.nn_max_normalizer
+            tmp_distance = torch.tensor([[tmp_distance]], dtype=torch.float32)
+            with torch.no_grad():
+                prob = self.model(tmp_distance).item()
+                self.nn_found_obstacle = 1 if prob > 0.5 else 0
+                print(self.scan_distance, prob, self.nn_found_obstacle)
+
         # === Step 1: Detect obstacle ===
         if self.state == 'NAVIGATE_TO_GOAL' and self.scan_distance is not None and self.scan_distance <= self.obstacle_threshold:
+        # if self.state == 'NAVIGATE_TO_GOAL' and self.nn_found_obstacle:
             self.get_logger().warn("⚠️ Obstacle too close! Initiating avoidance...")
             self.state = 'SCAN_SURROUNDINGS'
             # return
 
+        if (self.state == 'NAVIGATE_TO_INTERMEDIATE' and not self.intermediate_orientation_check) and self.scan_distance is not None and self.scan_distance <= self.obstacle_threshold:
+        # if (self.state == 'NAVIGATE_TO_INTERMEDIATE' and not self.intermediate_orientation_check) and self.nn_found_obstacle:
+            self.get_logger().warn("⚠️ Obstacle too close! Initiating avoidance...")
+            self.state = 'SCAN_SURROUNDINGS'
+            # return
         # === Step 2: Rotate and scan ===
         if self.state == 'SCAN_SURROUNDINGS':
             self.rotate_and_scan()
@@ -260,7 +300,7 @@ class GNCNode(Node):
         if self.state == 'NAVIGATE_TO_INTERMEDIATE' and self.intermediate_goal:
             target = self.intermediate_goal
             goal_angle = math.degrees(math.atan2(target[1], target[0])) - math.degrees(self.yaw)
-            if abs(goal_angle) < 5:
+            if abs(goal_angle) < 15:
                 self.intermediate_orientation_check = False
             if self.distance_to(*target) < 0.2:
                 self.state = 'NAVIGATE_TO_GOAL'
