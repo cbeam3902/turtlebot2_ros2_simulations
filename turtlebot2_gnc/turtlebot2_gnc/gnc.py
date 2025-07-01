@@ -3,6 +3,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan  # or use radar equivalent
+from std_msgs.msg import Bool
 import math
 import time
 import numpy as np
@@ -37,7 +38,8 @@ class GNCNode(Node):
         self.scan_radius = 1.0
         self.scan_resolution_deg = 10
         self.obstacle_threshold = 0.7
-        self.nn_max_normalizer = 9.540007 # Obtained while training
+        # self.nn_max_normalizer = 9.540007 # Obtained while training
+        self.nn_max_normalizer = 9.9995 # Synthetic dataset max value
         self.nn_found_obstacle = False
         self.model = SimpleClassifier()
         self.model.load_state_dict(torch.load("/tmp/urad_classifier.pt"))
@@ -61,6 +63,7 @@ class GNCNode(Node):
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.warn_pub = self.create_publisher(Bool, '/proximity_warning', 10)
         self.create_timer(0.1, self.control_loop)
         
         self.tf_buffer = Buffer()
@@ -168,7 +171,7 @@ class GNCNode(Node):
         for angle_deg, dist in self.scan_map.items():
             # Normalize to [-180, 180]
             angle_diff = ((angle_deg - goal_angle + 180) % 360) - 180
-            print(angle_deg, goal_angle, dist, abs(angle_diff))
+            # print(angle_deg, goal_angle, dist, abs(angle_diff))
             # If angle is more than 90° off from goal, apply penalty
             # if abs(angle_diff) > 100:
             #     direction_score = -1  # strong penalty
@@ -177,16 +180,16 @@ class GNCNode(Node):
             direction_score = (
                 -w_angle * abs(angle_diff) + w_dist * dist
             )
-            print(direction_score)
+            # print(direction_score)
             if direction_score > best_score:
                 best_score = direction_score
                 best_angle = angle_deg
                 best_dist = dist
-        print(best_angle, best_score)
+        # print(best_angle, best_score)
         return best_angle, best_dist
 
     def pick_intermediate_goal(self):
-        print(self.scan_map)
+        # print(self.scan_map)
         self.get_logger().info("📍 Selecting intermediate waypoint...")
         # Pick the direction with max clearance
         goal_vector = [self.goal_x - self.x, self.goal_y - self.y]
@@ -239,12 +242,12 @@ class GNCNode(Node):
 
             # Weighted scoring
             score = 0.2 * alignment_score + 0.8 * clearance_score
-            print(angle_deg, angle_rad, scan_theta, angle_diff, alignment_score, clearance_score, score)
+            # print(angle_deg, angle_rad, scan_theta, angle_diff, alignment_score, clearance_score, score)
             if score > best_score:
                 best_score = score
                 best_direction = scan_theta
 
-        print(best_direction, best_score)
+        # print(best_direction, best_score)
         if best_direction is None:
             self.intermediate_goal = (self.x, self.y)
             self.get_logger().info(f"🔀 No Intermediate goal: {self.intermediate_goal}")
@@ -258,7 +261,7 @@ class GNCNode(Node):
 
     def control_loop(self):
         msg = Twist()
-
+        self.warn_pub.publish(Bool(data= (self.nn_found_obstacle == 1)))
         # === Step 0: NN Classification ===
         if self.scan_distance is not None:
             tmp_distance = self.scan_distance / self.nn_max_normalizer
@@ -266,17 +269,17 @@ class GNCNode(Node):
             with torch.no_grad():
                 prob = self.model(tmp_distance).item()
                 self.nn_found_obstacle = 1 if prob > 0.5 else 0
-                print(self.scan_distance, prob, self.nn_found_obstacle)
+                # print(self.scan_distance, prob, self.nn_found_obstacle)
 
         # === Step 1: Detect obstacle ===
-        if self.state == 'NAVIGATE_TO_GOAL' and self.scan_distance is not None and self.scan_distance <= self.obstacle_threshold:
-        # if self.state == 'NAVIGATE_TO_GOAL' and self.nn_found_obstacle:
+        # if self.state == 'NAVIGATE_TO_GOAL' and self.scan_distance is not None and self.scan_distance <= self.obstacle_threshold:
+        if self.state == 'NAVIGATE_TO_GOAL' and self.nn_found_obstacle:
             self.get_logger().warn("⚠️ Obstacle too close! Initiating avoidance...")
             self.state = 'SCAN_SURROUNDINGS'
             # return
 
-        if (self.state == 'NAVIGATE_TO_INTERMEDIATE' and not self.intermediate_orientation_check) and self.scan_distance is not None and self.scan_distance <= self.obstacle_threshold:
-        # if (self.state == 'NAVIGATE_TO_INTERMEDIATE' and not self.intermediate_orientation_check) and self.nn_found_obstacle:
+        # if (self.state == 'NAVIGATE_TO_INTERMEDIATE' and not self.intermediate_orientation_check) and self.scan_distance is not None and self.scan_distance <= self.obstacle_threshold:
+        if (self.state == 'NAVIGATE_TO_INTERMEDIATE' and not self.intermediate_orientation_check) and self.nn_found_obstacle:
             self.get_logger().warn("⚠️ Obstacle too close! Initiating avoidance...")
             self.state = 'SCAN_SURROUNDINGS'
             # return
@@ -299,8 +302,9 @@ class GNCNode(Node):
         target = None
         if self.state == 'NAVIGATE_TO_INTERMEDIATE' and self.intermediate_goal:
             target = self.intermediate_goal
-            goal_angle = math.degrees(math.atan2(target[1], target[0])) - math.degrees(self.yaw)
-            if abs(goal_angle) < 15:
+            goal_angle = math.degrees(math.atan2(target[1] - self.y, target[0] - self.x)) - math.degrees(self.yaw)
+            # print(math.degrees(math.atan2(target[1] - self.y, target[0] - self.x)), math.degrees(self.yaw), goal_angle)
+            if abs(goal_angle) < 13:
                 self.intermediate_orientation_check = False
             if self.distance_to(*target) < 0.2:
                 self.state = 'NAVIGATE_TO_GOAL'
