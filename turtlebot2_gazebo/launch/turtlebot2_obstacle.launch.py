@@ -19,7 +19,7 @@ def generate_launch_description():
     world = os.path.join(
         get_package_share_directory('turtlebot2_gazebo'),
         'worlds',
-        'turtlebot2_obstacle_datacollect.world'
+        'turtlebot2_obstacle_demo.world'
     )
 
     gzserver_cmd = IncludeLaunchDescription(
