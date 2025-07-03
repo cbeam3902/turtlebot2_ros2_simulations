@@ -121,6 +121,40 @@
           </pbr>
         </material>
       </visual>
+      <visual name="Cube.007">
+        <geometry>
+          <mesh>
+            <uri>model://turtlebot2_obstaclecourse_demo/meshes/model.dae</uri>
+            <submesh>
+              <name>Cube.007</name>
+            </submesh>
+          </mesh>
+        </geometry>
+        <material>
+          <diffuse>1.0 1.0 1.0 1.0</diffuse>
+          <specular>0.0 0.0 0.0 1.0</specular>
+          <pbr>
+            <metal/>
+          </pbr>
+        </material>
+      </visual>
+      <visual name="Cube.008">
+        <geometry>
+          <mesh>
+            <uri>model://turtlebot2_obstaclecourse_demo/meshes/model.dae</uri>
+            <submesh>
+              <name>Cube.008</name>
+            </submesh>
+          </mesh>
+        </geometry>
+        <material>
+          <diffuse>1.0 1.0 1.0 1.0</diffuse>
+          <specular>0.0 0.0 0.0 1.0</specular>
+          <pbr>
+            <metal/>
+          </pbr>
+        </material>
+      </visual>
       <collision name="collision">
         <geometry>
           <mesh>

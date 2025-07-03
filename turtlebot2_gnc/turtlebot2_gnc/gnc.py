@@ -157,7 +157,7 @@ class GNCNode(Node):
                 # Stop after full 360°
                 # if delta_deg >= 360:
                 #     break
-            if self.scan_counter == 18:
+            if self.scan_counter == 20:
                 self.scan_state = 'END'
 
                 # Stop rotation
