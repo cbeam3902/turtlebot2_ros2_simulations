@@ -12,6 +12,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/' + package_name, [
             package_name+'/gnc.py', 
+            package_name+'/gnc_loop.py', 
             package_name+'/random_explorer.py', 
             package_name+'/__init__.py',
             package_name+'/urad_classifier.pt'
@@ -26,6 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'gnc = turtlebot2_gnc.gnc:main',
+            'gnc_loop = turtlebot2_gnc.gnc_loop:main',
             'random_explorer = turtlebot2_gnc.random_explorer:main'
         ],
     },
