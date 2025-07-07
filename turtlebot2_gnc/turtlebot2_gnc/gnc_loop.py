@@ -2,10 +2,14 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TransformStamped, Twist
+from std_msgs.msg import Float32
 import math
 import time
 import numpy as np
+
+import torch
+import torch.nn as nn
 
 def sigmoid_pi_range(x):
     return 1.0 / (1+np.exp(-(x * 6.0 / np.pi - np.pi)/2.5))
@@ -13,12 +17,27 @@ def sigmoid_pi_range(x):
 def linear_pi_range(x):
     return np.clip(x / np.pi, 0.001, 0.999)
 
+class SimpleClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # Binary output
+        )
+
+    def forward(self, x):
+        return self.model(x)
+
 class SimpleObstacleAvoider(Node):
     def __init__(self):
         super().__init__('simple_obstacle_avoider')
 
-        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        # self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        # self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.urad_sub = self.create_subscription(Float32, '/urad_distance_calc', self.urad_callback, 10)
+        self.pose_sub = self.create_subscription(TransformStamped, '/raph/nwu/pose', self.pose_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.max_angular_acc = 0.325
@@ -29,7 +48,8 @@ class SimpleObstacleAvoider(Node):
         self.max_linear_vel = 0.2
         self.curr_linear_vel = self.max_linear_vel
 
-        self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)]
+        # self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)] # Sim corners
+        self.goal_waypoints = [(1.2, -3.59), (1.21, 3.69), (-1.76, 3.63), (-1.78, -3.59)] # REEF corners
         self.goal_waypoints_idx = 0
         self.goal_x = self.goal_waypoints[0][0]  # Arbitrary goal for demo
         self.goal_y = self.goal_waypoints[0][1]
@@ -55,6 +75,13 @@ class SimpleObstacleAvoider(Node):
         self.slow_recovery_counter = 0
         self.slow_recovery_max = 60 # 20 counts of slow recovery before going to direct yaw error
 
+        # NN states
+        self.nn_max_normalizer = 9.9951 # Synthetic dataset max value
+        self.nn_found_obstacle = False
+        self.model = SimpleClassifier()
+        self.model.load_state_dict(torch.load("/tmp/urad_classifier.pt"))
+        self.model.eval()
+
     def sigmoid_linear_vel(self, alpha=0.4, kp=0.8, x_0=1):
         dx = self.goal_x - self.curr_x
         dy = self.goal_y - self.curr_y
@@ -70,8 +97,23 @@ class SimpleObstacleAvoider(Node):
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         self.yaw = math.atan2(siny_cosp, cosy_cosp)
 
+    def pose_callback(self, msg):
+        self.curr_x = msg.transform.translation.x
+        self.curr_y = msg.transform.translation.y
+
+        q = msg.transform.rotation
+        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+        self.yaw = math.atan2(siny_cosp, cosy_cosp)
+
     def scan_callback(self, msg):
-        dist = msg.ranges[0]
+        dist = msg.ranges[199]
+        self.previous_distance = self.latest_distance
+        self.latest_distance = dist
+
+    def urad_callback(self, msg):
+        dist = msg.data
+        print(dist)
         self.previous_distance = self.latest_distance
         self.latest_distance = dist
 
@@ -86,7 +128,14 @@ class SimpleObstacleAvoider(Node):
         ###         positive, negative, then positive again assuming left is also not a wall
         ##  Yaw error feedback loop as it'll be at the incorrect orientation
         # print(sigmoid_pi_range(abs(yaw_error)))
-        if self.latest_distance < self.distance_threshold:
+        tmp_distance = self.latest_distance / self.nn_max_normalizer
+        tmp_distance = torch.tensor([[tmp_distance]], dtype=torch.float32)
+        with torch.no_grad():
+            prob = self.model(tmp_distance).item()
+            self.nn_found_obstacle = True if prob > 0.5 else False
+
+        if self.nn_found_obstacle:
+        # if self.latest_distance < self.distance_threshold:
             # Distance check
             self.curr_angular_vel = self.max_angular_vel
             self.slow_recovery_counter = 0
@@ -106,7 +155,8 @@ class SimpleObstacleAvoider(Node):
             else:
                 temp = math.copysign(self.max_angular_vel, yaw_error)
                 self.curr_angular_vel = temp if abs(yaw_error) > 0.1 else yaw_error
-                self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
+                # self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
+                self.curr_linear_vel = self.sigmoid_linear_vel()
 
     def control_loop(self):
         cmd = Twist()
@@ -127,6 +177,7 @@ class SimpleObstacleAvoider(Node):
             cmd.linear.x = 0.0
             cmd.angular.z = 0.0
             self.cmd_pub.publish(cmd)
+            return
 
         desired_yaw = math.atan2(dy, dx)
         yaw_error = desired_yaw - self.yaw
