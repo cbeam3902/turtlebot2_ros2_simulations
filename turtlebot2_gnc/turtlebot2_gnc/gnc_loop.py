@@ -21,12 +21,13 @@ class SimpleObstacleAvoider(Node):
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        self.max_angular_acc = 0.35
+        self.max_angular_acc = 0.325
         self.max_angular_vel = 0.3
         # self.curr_angular_acc = 0.2
         self.curr_angular_vel = 0.0
         self.max_linear_acc = 0
-        self.curr_linear_vel = 0.2
+        self.max_linear_vel = 0.2
+        self.curr_linear_vel = self.max_linear_vel
 
         self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)]
         self.goal_waypoints_idx = 0
@@ -54,6 +55,11 @@ class SimpleObstacleAvoider(Node):
         self.slow_recovery_counter = 0
         self.slow_recovery_max = 60 # 20 counts of slow recovery before going to direct yaw error
 
+    def sigmoid_linear_vel(self, alpha=0.4, kp=0.8, x_0=1):
+        dx = self.goal_x - self.curr_x
+        dy = self.goal_y - self.curr_y
+        goal_dist = math.hypot(dx, dy)
+        return self.max_linear_vel * 1/(1+kp*np.exp(-(goal_dist-x_0)/alpha))
 
     def odom_callback(self, msg):
         self.curr_x = msg.pose.pose.position.x
@@ -92,13 +98,15 @@ class SimpleObstacleAvoider(Node):
                 temp = math.copysign(temp, yaw_error)
                 self.curr_angular_vel = self.curr_angular_vel + temp * sigmoid_pi_range(abs(yaw_error))
                 self.curr_angular_vel = min(max(self.curr_angular_vel, -self.max_angular_vel), self.max_angular_vel)
+                self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
                 self.slow_recovery_counter += 1
                 if self.slow_recovery_counter >= self.slow_recovery_max:
                     self.slow_recovery_counter = 0
                     self.slow_recovery = False
             else:
                 temp = math.copysign(self.max_angular_vel, yaw_error)
-                self.curr_angular_vel = temp if abs(yaw_error) > self.max_angular_vel else yaw_error
+                self.curr_angular_vel = temp if abs(yaw_error) > 0.1 else yaw_error
+                self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
 
     def control_loop(self):
         cmd = Twist()
