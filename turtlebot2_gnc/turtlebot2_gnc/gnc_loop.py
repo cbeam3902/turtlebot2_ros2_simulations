@@ -21,15 +21,19 @@ class SimpleObstacleAvoider(Node):
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        self.max_angular_acc = 0.4
+        self.max_angular_acc = 0.35
         self.max_angular_vel = 0.3
         # self.curr_angular_acc = 0.2
         self.curr_angular_vel = 0.0
         self.max_linear_acc = 0
         self.curr_linear_vel = 0.2
 
-        self.goal_x = 2.0  # Arbitrary goal for demo
-        self.goal_y = 5.0
+        self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)]
+        self.goal_waypoints_idx = 0
+        self.goal_x = self.goal_waypoints[0][0]  # Arbitrary goal for demo
+        self.goal_y = self.goal_waypoints[0][1]
+        self.lap_counter = 0
+        self.max_laps = 1
 
         self.curr_x = 0.0
         self.curr_y = 0.0
@@ -48,7 +52,7 @@ class SimpleObstacleAvoider(Node):
         self.past_obstacle = False
         self.slow_recovery = True
         self.slow_recovery_counter = 0
-        self.slow_recovery_max = 40 # 20 counts of slow recovery before going to direct yaw error
+        self.slow_recovery_max = 60 # 20 counts of slow recovery before going to direct yaw error
 
 
     def odom_callback(self, msg):
@@ -78,7 +82,8 @@ class SimpleObstacleAvoider(Node):
         # print(sigmoid_pi_range(abs(yaw_error)))
         if self.latest_distance < self.distance_threshold:
             # Distance check
-            self.curr_angular_vel = self.max_angular_vel 
+            self.curr_angular_vel = self.max_angular_vel
+            self.slow_recovery_counter = 0
             self.slow_recovery = True
         else:
             # Yaw error
@@ -102,10 +107,18 @@ class SimpleObstacleAvoider(Node):
         goal_dist = math.hypot(dx, dy)
 
         if goal_dist < 0.2:
+            self.goal_waypoints_idx += 1
+            if self.goal_waypoints_idx >= len(self.goal_waypoints):
+                self.goal_waypoints_idx = 0
+                self.lap_counter += 1
+            self.goal_x = self.goal_waypoints[self.goal_waypoints_idx][0]
+            self.goal_y = self.goal_waypoints[self.goal_waypoints_idx][1]
+            return
+        if self.lap_counter >= self.max_laps:
+            # Stop logic, want to do laps
             cmd.linear.x = 0.0
             cmd.angular.z = 0.0
             self.cmd_pub.publish(cmd)
-            return
 
         desired_yaw = math.atan2(dy, dx)
         yaw_error = desired_yaw - self.yaw
