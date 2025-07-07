@@ -21,7 +21,7 @@ class SimpleObstacleAvoider(Node):
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        self.max_angular_acc = 0.3
+        self.max_angular_acc = 0.4
         self.max_angular_vel = 0.3
         # self.curr_angular_acc = 0.2
         self.curr_angular_vel = 0.0
@@ -37,7 +37,7 @@ class SimpleObstacleAvoider(Node):
 
         self.latest_distance = float('inf')
         self.previous_distance = -1
-        self.distance_threshold = 1.5
+        self.distance_threshold = 1.25
         self.prev_time = 0.0
         self.turning_left = False
         self.last_direction_change_time = 0.0
@@ -46,8 +46,9 @@ class SimpleObstacleAvoider(Node):
         self.timer = self.create_timer(0.1, self.control_loop)  # 10 Hz
         self.dist_history = []
         self.past_obstacle = False
-        self.recovery_start_time = 0.0
-        self.recovery_duration = 2.0  # seconds to slowly re-align to goal
+        self.slow_recovery = True
+        self.slow_recovery_counter = 0
+        self.slow_recovery_max = 40 # 20 counts of slow recovery before going to direct yaw error
 
 
     def odom_callback(self, msg):
@@ -67,26 +68,32 @@ class SimpleObstacleAvoider(Node):
     def distance_logic(self, time_diff, yaw_error):
         if self.start:
             return
-        print(time_diff, yaw_error, self.curr_angular_vel, self.latest_distance < self.distance_threshold)
+        # print(time_diff, yaw_error, self.curr_angular_vel, self.latest_distance < self.distance_threshold)
         # Logic needed
         ##  Distance check to see if the distance needed went past the threshold
         ##  Distance derivative check to see if the distance is not increasing as it turns right (turn left then)
         ###     If turning left, would probably need to do a derivative sign counter check as it'll be
         ###         positive, negative, then positive again assuming left is also not a wall
         ##  Yaw error feedback loop as it'll be at the incorrect orientation
-        print(sigmoid_pi_range(abs(yaw_error)))
+        # print(sigmoid_pi_range(abs(yaw_error)))
         if self.latest_distance < self.distance_threshold:
             # Distance check
             self.curr_angular_vel = self.max_angular_vel 
+            self.slow_recovery = True
         else:
             # Yaw error
-            temp = self.max_angular_acc * time_diff
-            temp = math.copysign(temp, yaw_error)
-            self.curr_angular_vel = self.curr_angular_vel + temp * sigmoid_pi_range(abs(yaw_error))
-            self.curr_angular_vel = min(max(self.curr_angular_vel, -self.max_angular_vel), self.max_angular_vel)
-
-            # temp = math.copysign(self.max_angular_vel, yaw_error)
-            # self.curr_angular_vel = temp if abs(yaw_error) > self.max_angular_vel else yaw_error
+            if self.slow_recovery:
+                temp = self.max_angular_acc * time_diff
+                temp = math.copysign(temp, yaw_error)
+                self.curr_angular_vel = self.curr_angular_vel + temp * sigmoid_pi_range(abs(yaw_error))
+                self.curr_angular_vel = min(max(self.curr_angular_vel, -self.max_angular_vel), self.max_angular_vel)
+                self.slow_recovery_counter += 1
+                if self.slow_recovery_counter >= self.slow_recovery_max:
+                    self.slow_recovery_counter = 0
+                    self.slow_recovery = False
+            else:
+                temp = math.copysign(self.max_angular_vel, yaw_error)
+                self.curr_angular_vel = temp if abs(yaw_error) > self.max_angular_vel else yaw_error
 
     def control_loop(self):
         cmd = Twist()
