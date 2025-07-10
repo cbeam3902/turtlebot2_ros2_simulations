@@ -48,8 +48,8 @@ class SimpleObstacleAvoider(Node):
         self.max_linear_vel = 0.2
         self.curr_linear_vel = self.max_linear_vel
 
-        # self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)] # Sim corners
-        self.goal_waypoints = [(1.2, -3.59), (1.21, 3.69), (-1.76, 3.63), (-1.78, -3.59)] # REEF corners
+        self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)] # Sim corners
+        # self.goal_waypoints = [(1.2, -3.59), (1.21, 3.69), (-1.76, 3.63), (-1.78, -3.59)] # REEF corners
         self.goal_waypoints_idx = 0
         self.goal_x = self.goal_waypoints[0][0]  # Arbitrary goal for demo
         self.goal_y = self.goal_waypoints[0][1]
@@ -62,6 +62,7 @@ class SimpleObstacleAvoider(Node):
 
         self.latest_distance = float('inf')
         self.previous_distance = -1
+        self.odom_prev_time = 0.0
         self.measured_vel = 0
         self.distance_threshold = 1.25
         self.prev_time = 0.0
@@ -74,7 +75,7 @@ class SimpleObstacleAvoider(Node):
         self.past_obstacle = False
         self.slow_recovery = True
         self.slow_recovery_counter = 0
-        self.slow_recovery_max = 60 # 20 counts of slow recovery before going to direct yaw error
+        self.slow_recovery_max = 30 # 20 counts of slow recovery before going to direct yaw error
 
         # NN states
         self.nn_max_normalizer = 9.9951 # Synthetic dataset max value
@@ -88,11 +89,29 @@ class SimpleObstacleAvoider(Node):
         dy = self.goal_y - self.curr_y
         goal_dist = math.hypot(dx, dy)
         return self.max_linear_vel * 1/(1+kp*np.exp(-(goal_dist-x_0)/alpha))
+    
+    def sigmoid_angular_vel(self, alpha=0.4, kp=0.8, x_0=1):
+        dx = self.goal_x - self.curr_x
+        dy = self.goal_y - self.curr_y
+
+        desired_yaw = math.atan2(dy, dx)
+        yaw_error = desired_yaw - self.yaw
+        yaw_error = math.atan2(math.sin(yaw_error), math.cos(yaw_error))  # Normalize
+
+        temp = np.clip(self.max_angular_vel * 1/(1+kp*np.exp((abs(yaw_error)-x_0)/alpha)), 0.02, self.max_angular_vel)
+        # temp = math.copysign(temp, yaw_error)
+        return temp
 
     def odom_callback(self, msg):
+        previous_x = self.curr_x
+        previous_y = self.curr_y
+        now = time.time()
+        time_diff = now - self.odom_prev_time
+        self.odom_prev_time = now
         self.curr_x = msg.pose.pose.position.x
         self.curr_y = msg.pose.pose.position.y
         # For simplicity, only yaw (from quaternion)
+        self.measured_vel = np.sqrt((self.curr_x - previous_x)**2 + (self.curr_y - previous_y)**2) / time_diff
         q = msg.pose.pose.orientation
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
@@ -111,7 +130,6 @@ class SimpleObstacleAvoider(Node):
         dist = msg.ranges[0]
         self.previous_distance = self.latest_distance
         self.latest_distance = dist
-        self.measured_vel = latest_distance - self.previous_distance
 
     def urad_callback(self, msg):
         dist = msg.data
@@ -147,9 +165,11 @@ class SimpleObstacleAvoider(Node):
             if self.slow_recovery:
                 temp = self.max_angular_acc * time_diff
                 temp = math.copysign(temp, yaw_error)
-                self.curr_angular_vel = self.curr_angular_vel + temp * sigmoid_pi_range(abs(yaw_error))
-                self.curr_angular_vel = min(max(self.curr_angular_vel, -self.max_angular_vel), self.max_angular_vel)
-                self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
+                # self.curr_angular_vel = self.curr_angular_vel + temp * sigmoid_pi_range(abs(yaw_error))
+                # self.curr_angular_vel = min(max(self.curr_angular_vel, -self.max_angular_vel), self.max_angular_vel)
+                self.curr_angular_vel = self.sigmoid_angular_vel()
+                # self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
+                self.curr_linear_vel = self.sigmoid_linear_vel(x_0=0.5)
                 self.slow_recovery_counter += 1
                 if self.slow_recovery_counter >= self.slow_recovery_max:
                     self.slow_recovery_counter = 0
@@ -158,7 +178,7 @@ class SimpleObstacleAvoider(Node):
                 temp = math.copysign(self.max_angular_vel, yaw_error)
                 self.curr_angular_vel = temp if abs(yaw_error) > 0.1 else yaw_error
                 # self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
-                self.curr_linear_vel = self.sigmoid_linear_vel()
+                self.curr_linear_vel = self.sigmoid_linear_vel(x_0=0.5)
 
     def control_loop(self):
         cmd = Twist()
