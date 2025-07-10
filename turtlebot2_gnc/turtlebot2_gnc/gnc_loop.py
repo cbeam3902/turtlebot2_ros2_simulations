@@ -34,10 +34,10 @@ class SimpleObstacleAvoider(Node):
     def __init__(self):
         super().__init__('simple_obstacle_avoider')
 
-        # self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
-        # self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.urad_sub = self.create_subscription(Float32, '/urad_distance_calc', self.urad_callback, 10)
-        self.pose_sub = self.create_subscription(TransformStamped, '/raph/nwu/pose', self.pose_callback, 10)
+        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        # self.urad_sub = self.create_subscription(Float32, '/urad_distance_calc', self.urad_callback, 10)
+        # self.pose_sub = self.create_subscription(TransformStamped, '/raph/nwu/pose', self.pose_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.max_angular_acc = 0.325
@@ -62,6 +62,7 @@ class SimpleObstacleAvoider(Node):
 
         self.latest_distance = float('inf')
         self.previous_distance = -1
+        self.measured_vel = 0
         self.distance_threshold = 1.25
         self.prev_time = 0.0
         self.turning_left = False
@@ -107,9 +108,10 @@ class SimpleObstacleAvoider(Node):
         self.yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def scan_callback(self, msg):
-        dist = msg.ranges[199]
+        dist = msg.ranges[0]
         self.previous_distance = self.latest_distance
         self.latest_distance = dist
+        self.measured_vel = latest_distance - self.previous_distance
 
     def urad_callback(self, msg):
         dist = msg.data
