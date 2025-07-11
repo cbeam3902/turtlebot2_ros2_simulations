@@ -41,11 +41,12 @@ class SimpleObstacleAvoider(Node):
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.max_angular_acc = 0.325
-        self.max_angular_vel = 0.3
+        self.max_angular_vel = 0.4
         # self.curr_angular_acc = 0.2
         self.curr_angular_vel = 0.0
         self.max_linear_acc = 0
-        self.max_linear_vel = 0.2
+        # self.max_linear_vel = 0.2
+        self.max_linear_vel = 0.1 + np.random.random() * 0.2
         self.curr_linear_vel = self.max_linear_vel
 
         self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)] # Sim corners
@@ -74,6 +75,10 @@ class SimpleObstacleAvoider(Node):
         self.dist_history = []
         self.past_obstacle = False
         self.slow_recovery = True
+        self.tti_min = 3.5
+        self.tti_avoid = 5
+        self.tti_safe = 7.0
+        self.tti_counter = 0
         self.slow_recovery_counter = 0
         self.slow_recovery_max = 30 # 20 counts of slow recovery before going to direct yaw error
 
@@ -136,6 +141,43 @@ class SimpleObstacleAvoider(Node):
         print(dist)
         self.previous_distance = self.latest_distance
         self.latest_distance = dist
+
+    def time_logic(self, time_diff, yaw_error):
+        if self.start:
+            return
+        tti = self.latest_distance / self.measured_vel
+        print(self.latest_distance, self.measured_vel, tti)
+        if tti < self.tti_min:
+            self.curr_angular_vel = self.max_angular_vel
+        elif tti < self.tti_avoid:
+            k = 2.0
+            self.curr_angular_vel = k * (1/tti - 1/self.tti_safe)
+            self.slow_recovery_counter = 0
+            self.slow_recovery = True
+            self.tti_counter += 0.5
+        elif tti < self.tti_safe:
+            blend = (self.tti_safe - tti) / (self.tti_safe - self.tti_avoid)
+            self.curr_angular_vel = (1 - blend) * yaw_error + blend * self.curr_angular_vel
+        else:
+            if self.slow_recovery:
+                temp = self.max_angular_acc * time_diff
+                temp = math.copysign(temp, yaw_error)
+                # self.curr_angular_vel = self.curr_angular_vel + temp * sigmoid_pi_range(abs(yaw_error))
+                # self.curr_angular_vel = min(max(self.curr_angular_vel, -self.max_angular_vel), self.max_angular_vel)
+                self.curr_angular_vel = self.sigmoid_angular_vel()
+                # self.curr_linear_vel = self.max_linear_vel # self.sigmoid_linear_vel()
+                self.curr_linear_vel = self.sigmoid_linear_vel(x_0=0.5)
+                self.slow_recovery_counter += 1
+                if self.slow_recovery_counter >= (self.slow_recovery_max + self.tti_counter):
+                    self.slow_recovery_counter = 0
+                    self.slow_recovery = False
+                    self.tti_counter = 0
+            else:
+                temp = math.copysign(self.max_angular_vel, yaw_error)
+                self.curr_angular_vel = temp if abs(yaw_error) > 0.1 else yaw_error
+
+        self.curr_linear_vel = self.sigmoid_linear_vel(x_0=0.5)
+        self.curr_angular_vel = np.clip(self.curr_angular_vel, -self.max_angular_vel, self.max_angular_vel)
 
     def distance_logic(self, time_diff, yaw_error):
         if self.start:
@@ -217,7 +259,8 @@ class SimpleObstacleAvoider(Node):
         else:
             angular_z = self.curr_angular_vel
             linear_x = self.curr_linear_vel
-        self.distance_logic(time_diff, yaw_error)
+        # self.distance_logic(time_diff, yaw_error)
+        self.time_logic(time_diff, yaw_error)
         cmd.linear.x = linear_x
         cmd.angular.z = angular_z
         # print(linear_x, angular_z, self.start)
