@@ -3,7 +3,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped, Twist
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Float32MultiArray
 import math
 import time
 import numpy as np
@@ -37,11 +37,12 @@ class SimpleObstacleAvoider(Node):
         self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         # self.urad_sub = self.create_subscription(Float32, '/urad_distance_calc', self.urad_callback, 10)
+        # self.urad_vel_sub = self.create_subscription(Float32MultiArray, '/urad_velocity', self.urad_vel_callback, 10)
         # self.pose_sub = self.create_subscription(TransformStamped, '/raph/nwu/pose', self.pose_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.max_angular_acc = 0.325
-        self.max_angular_vel = 0.4
+        self.max_angular_vel = 0.425
         # self.curr_angular_acc = 0.2
         self.curr_angular_vel = 0.0
         self.max_linear_acc = 0
@@ -86,7 +87,7 @@ class SimpleObstacleAvoider(Node):
         self.nn_max_normalizer = 9.9951 # Synthetic dataset max value
         self.nn_found_obstacle = False
         self.model = SimpleClassifier()
-        self.model.load_state_dict(torch.load("/tmp/urad_classifier.pt"))
+        self.model.load_state_dict(torch.load("/tmp/urad_classifier_time.pt"))
         self.model.eval()
 
     def sigmoid_linear_vel(self, alpha=0.4, kp=0.8, x_0=1):
@@ -138,26 +139,38 @@ class SimpleObstacleAvoider(Node):
 
     def urad_callback(self, msg):
         dist = msg.data
-        print(dist)
+        # print(dist)
         self.previous_distance = self.latest_distance
         self.latest_distance = dist
+    
+    def urad_vel_callback(self, msg):
+        vel = msg.data[0]
+        # print(dist)
+        self.measured_vel = vel
 
     def time_logic(self, time_diff, yaw_error):
         if self.start:
             return
         tti = self.latest_distance / self.measured_vel
-        print(self.latest_distance, self.measured_vel, tti)
-        if tti < self.tti_min:
-            self.curr_angular_vel = self.max_angular_vel
-        elif tti < self.tti_avoid:
-            k = 2.0
-            self.curr_angular_vel = k * (1/tti - 1/self.tti_safe)
-            self.slow_recovery_counter = 0
-            self.slow_recovery = True
-            self.tti_counter += 0.5
-        elif tti < self.tti_safe:
-            blend = (self.tti_safe - tti) / (self.tti_safe - self.tti_avoid)
-            self.curr_angular_vel = (1 - blend) * yaw_error + blend * self.curr_angular_vel
+
+        nn_avoid_obstacle = False
+        prob = 0
+        with torch.no_grad():
+            prob = self.model(torch.tensor([[tti / self.nn_max_normalizer]], dtype=torch.float32)).item()
+            nn_avoid_obstacle = True if prob > 0.5 else False
+        print(self.latest_distance, self.measured_vel, tti, prob, self.slow_recovery)
+        if nn_avoid_obstacle:
+            if tti < self.tti_min:
+                self.curr_angular_vel = self.max_angular_vel
+            elif tti < self.tti_avoid:
+                k = 2.0
+                self.curr_angular_vel = k * (1/tti - 1/self.tti_safe)
+                self.slow_recovery_counter = 0
+                self.slow_recovery = True
+                self.tti_counter += 0.5
+            elif tti < self.tti_safe:
+                blend = (self.tti_safe - tti) / (self.tti_safe - self.tti_avoid)
+                self.curr_angular_vel = (1 - blend) * yaw_error + blend * self.curr_angular_vel
         else:
             if self.slow_recovery:
                 temp = self.max_angular_acc * time_diff
