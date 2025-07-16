@@ -34,11 +34,11 @@ class SimpleObstacleAvoider(Node):
     def __init__(self):
         super().__init__('simple_obstacle_avoider')
 
-        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        # self.urad_sub = self.create_subscription(Float32, '/urad_distance_calc', self.urad_callback, 10)
-        # self.urad_vel_sub = self.create_subscription(Float32MultiArray, '/urad_velocity', self.urad_vel_callback, 10)
-        # self.pose_sub = self.create_subscription(TransformStamped, '/raph/nwu/pose', self.pose_callback, 10)
+        # self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        # self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.urad_sub = self.create_subscription(Float32, '/urad_distance_calc', self.urad_callback, 10)
+        self.urad_vel_sub = self.create_subscription(Float32, '/urad_velocity_calc', self.urad_vel_callback, 10)
+        self.pose_sub = self.create_subscription(TransformStamped, '/raph/nwu/pose', self.pose_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.max_angular_acc = 0.325
@@ -46,12 +46,12 @@ class SimpleObstacleAvoider(Node):
         # self.curr_angular_acc = 0.2
         self.curr_angular_vel = 0.0
         self.max_linear_acc = 0
-        # self.max_linear_vel = 0.2
-        self.max_linear_vel = 0.1 + np.random.random() * 0.2
+        self.max_linear_vel = 0.2
+        # self.max_linear_vel = 0.1 + np.random.random() * 0.2
         self.curr_linear_vel = self.max_linear_vel
 
-        self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)] # Sim corners
-        # self.goal_waypoints = [(1.2, -3.59), (1.21, 3.69), (-1.76, 3.63), (-1.78, -3.59)] # REEF corners
+        # self.goal_waypoints = [(2.0, 5.0), (-2.0, 5.0), (-2.0, -5.0), (2.0, -5.0)] # Sim corners
+        self.goal_waypoints = [(1.2, -3.59), (1.21, 3.69), (-1.76, 3.63), (-1.78, -3.59)] # REEF corners
         self.goal_waypoints_idx = 0
         self.goal_x = self.goal_waypoints[0][0]  # Arbitrary goal for demo
         self.goal_y = self.goal_waypoints[0][1]
@@ -76,9 +76,9 @@ class SimpleObstacleAvoider(Node):
         self.dist_history = []
         self.past_obstacle = False
         self.slow_recovery = True
-        self.tti_min = 3.5
-        self.tti_avoid = 5
-        self.tti_safe = 7.0
+        self.tti_min = 1.0
+        self.tti_avoid = 2.0
+        self.tti_safe = 3.0
         self.tti_counter = 0
         self.slow_recovery_counter = 0
         self.slow_recovery_max = 30 # 20 counts of slow recovery before going to direct yaw error
@@ -87,7 +87,7 @@ class SimpleObstacleAvoider(Node):
         self.nn_max_normalizer = 9.9951 # Synthetic dataset max value
         self.nn_found_obstacle = False
         self.model = SimpleClassifier()
-        self.model.load_state_dict(torch.load("/tmp/urad_classifier_time.pt"))
+        self.model.load_state_dict(torch.load("/tmp/urad_classifier.pt"))
         self.model.eval()
 
     def sigmoid_linear_vel(self, alpha=0.4, kp=0.8, x_0=1):
@@ -144,12 +144,14 @@ class SimpleObstacleAvoider(Node):
         self.latest_distance = dist
     
     def urad_vel_callback(self, msg):
-        vel = msg.data[0]
-        # print(dist)
-        self.measured_vel = vel
+        vel = msg.data
+        # print(vel)
+        self.measured_vel = -vel
 
     def time_logic(self, time_diff, yaw_error):
         if self.start:
+            return
+        if self.measured_vel == 0.0:
             return
         tti = self.latest_distance / self.measured_vel
 
