@@ -39,11 +39,13 @@ class RIOSARBasic(Node):
 
         # Needed for SAR
         self.n_pulses = 32
-        self.ph = np.zeros((self.N_FFT, self.n_pulses), np.float) # N Pulses of N_FFT ranges
+        self.ph_left = np.zeros((self.N_FFT, self.n_pulses), np.float) # N Pulses of N_FFT ranges
+        self.ph_right = np.zeros((self.N_FFT, self.n_pulses), np.float) # N Pulses of N_FFT ranges
         self.position = np.zeros((3, self.n_pulses), np.float) # Position: X, Y, Z
         self.orientation = np.zeros((4, self.n_pulses), np.float) # Orientation: X, Y, Z, W
         self.pulse_counter = 0 # Need to keep track of how many control calls been made since the beginning
-        self.image = np.zeros((self.N_FFT, self.N_FFT), np.float)
+        # self.image = np.zeros((self.N_FFT, self.N_FFT), np.float) # Single image
+        self.image = np.ones((self.N_FFT, self.N_FFT*2), np.float) * 0.00001 # Left & right image
 
 
     # For now, let's assume that the scan and odom messages happen relatively close to each other
@@ -89,7 +91,8 @@ class RIOSARBasic(Node):
             # Roll the pose and range holders once so the recent "pulse" is at the end
             self.position = np.roll(self.position, -1, 1)
             self.orientation = np.roll(self.orientation, -1, 1)
-            self.ph = np.roll(self.ph, -1, 1)
+            self.ph_left = np.roll(self.ph_left, -1, 1)
+            self.ph_right = np.roll(self.ph_right, -1, 1)
             
             # Assign the position and orientation at the end
             pos = temp_odom.pose.pose.position
@@ -101,8 +104,8 @@ class RIOSARBasic(Node):
             self.position[:,-1] = pos
             self.orientation[:,-1] = quat
 
-            # Get the LiDAR ranges
-            dist = np.array(temp_scan.ranges).reshape(-1)
+            # Get the LiDAR ranges for "left" side
+            dist = np.array(temp_scan.ranges[75:105]).reshape(-1)
             range_min = temp_scan.range_min
             range_max = temp_scan.range_max
 
@@ -127,13 +130,13 @@ class RIOSARBasic(Node):
                 target_ranges[-1] = np.mean(dist[start_idx:])
             
             # Make a range profile similar to the one from a RADAR FFT
-            range_profile = np.ones(self.N_FFT*2) * -60.0
+            range_profile = np.ones(self.N_FFT*2) * 0.00001
             # print(range_max)
             # target_ranges[target_ranges > range_max] = range_max
             target_ranges = (target_ranges - range_min) / (range_max - range_min) * self.N_FFT
             target_ranges = target_ranges.astype(np.int32).tolist()
             # print(target_ranges)
-            range_profile[target_ranges] = 0
+            range_profile[target_ranges] = 1.0
 
             # for target in target_ranges:
             #     range_profile[target] = 0
@@ -144,7 +147,52 @@ class RIOSARBasic(Node):
             # except:
             #     range_profile[target_ranges] = 0
             
-            self.ph[:,-1] = range_profile[0:256]
+            self.ph_left[:,-1] = range_profile[0:256]
+
+            # Get the LiDAR ranges for "left" side
+            dist = np.array(temp_scan.ranges[255:285]).reshape(-1)
+            range_min = temp_scan.range_min
+            range_max = temp_scan.range_max
+
+            # Find the targets
+            # Get the indexes for big jumps
+            dist_diff = np.abs(np.diff(dist)) > self.dist_jump_threshold
+            target_ranges = None
+            # If there are not any then just get the mean of the ranges
+            if not np.any(dist_diff):
+                target_ranges = np.array(np.mean(dist))
+            else:
+                diff_idx = [i for i, x in enumerate(dist_diff) if x]
+                diff_idx = np.array(diff_idx, np.int32) + 1
+                target_ranges = np.zeros(sum(dist_diff)+1)
+                start_idx = 0
+                end_idx = diff_idx[0]
+                for idx in range(sum(dist_diff)):
+                    target_ranges[idx] = np.mean(dist[start_idx:end_idx])
+                    start_idx = end_idx
+                    if idx != sum(dist_diff) - 1:
+                        end_idx = diff_idx[idx+1]
+                target_ranges[-1] = np.mean(dist[start_idx:])
+            
+            # Make a range profile similar to the one from a RADAR FFT
+            range_profile = np.ones(self.N_FFT*2) * 0.00001
+            # print(range_max)
+            # target_ranges[target_ranges > range_max] = range_max
+            target_ranges = (target_ranges - range_min) / (range_max - range_min) * self.N_FFT
+            target_ranges = target_ranges.astype(np.int32).tolist()
+            # print(target_ranges)
+            range_profile[target_ranges] = 1.0
+
+            # for target in target_ranges:
+            #     range_profile[target] = 0
+            #     range_profile[-target] = 0
+            # try:
+            #     for target in target_ranges:
+            #         range_profile[target] = 0
+            # except:
+            #     range_profile[target_ranges] = 0
+            
+            self.ph_right[:,-1] = range_profile[0:256]
 
             # # I/Q? Need to comment the plt.ion from above
             # IQ = np.fft.ifft(np.array(range_profile))
@@ -519,13 +567,16 @@ class RIOSARBasic(Node):
         # For each target, figure out which distance is within a certain boundary of the image space
         # In case there's only 1 target
         distance_grid = np.sqrt((X - position[0])**2 + Y**2)
-        try:
-            for target in target_distance:
-                contrib_idx = np.abs(distance_grid - target) < 0.01
-                self.image[contrib_idx] += 1
-        except:
-            contrib_idx = np.abs(distance_grid - target_distance) < 0.01
-            self.image[contrib_idx] += 1
+        # try:
+        #     for target in target_distance:
+        #         contrib_idx = np.abs(distance_grid - target) < 0.01
+        #         self.image[contrib_idx] += 1
+        # except:
+        #     contrib_idx = np.abs(distance_grid - target_distance) < 0.01
+        #     self.image[contrib_idx] += 1
+
+        interp_values = np.interp(distance_grid, distance_axis, ph, left=0.00001, right=0.00001)
+        self.image += interp_values
 
         # print(x_idx[0], y_idx[0])
         # for idx in range(len(x_idx)):
@@ -538,14 +589,97 @@ class RIOSARBasic(Node):
         plt.pause(0.0001)
         plt.clf()
 
+    def sar_radar_both(self, ph_left, ph_right, position, orientation):
+        # For now, let's get the distances from the range profile
+        distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)
+        target_idx = ph_left > -1
+        target_distance = distance_axis[target_idx]
+        image_left = self.image[:,:self.N_FFT]
+        image_right = self.image[:,self.N_FFT:]
+        yaw = np.arctan2(2.0 * (orientation[3] * orientation[2] + orientation[0] * orientation[1]), 1.0 - 2.0 * (orientation[1] * orientation[1] + orientation[2] * orientation[2]))
+        # For now, let's get an "image" of the left side of the map
+        # Have the image space be 10m (-5 to 5) by 10m (0 to 10)
+        x = np.linspace(-5, 5, self.N_FFT)
+        y = np.linspace(0, 10, self.N_FFT)
+
+        X, Y = np.meshgrid(x, y)
+
+        # For each target, figure out which distance is within a certain boundary of the image space
+        # In case there's only 1 target
+        distance_grid = np.sqrt((X - position[0])**2 + (Y - position[1])**2)
+        angle_grid = np.arctan2(Y-position[1],X-position[0])
+        angle_idx1 = ((1.308997 + yaw + np.pi) % (2 * np.pi) - np.pi) <= angle_grid
+        angle_idx2 = angle_grid <= ((1.832596 + yaw + np.pi) % (2 * np.pi) - np.pi)
+        angle_idx = angle_idx1 & angle_idx2
+
+        # try:
+        #     for target in target_distance:
+        #         contrib_idx = np.abs(distance_grid - target) < 0.01
+        #         image_left[contrib_idx] += 1
+        # except:
+        #     contrib_idx = np.abs(distance_grid - target_distance) < 0.01
+        #     image_left[contrib_idx] += 1
+
+        # # Let's do the right side now
+        # target_idx = ph_right > -1
+        # target_distance = distance_axis[target_idx]
+
+        # # For each target, figure out which distance is within a certain boundary of the image space
+        # # In case there's only 1 target
+        # distance_grid = np.sqrt((X - position[0])**2 + Y**2)
+        # try:
+        #     for target in target_distance:
+        #         contrib_idx = np.abs(distance_grid - target) < 0.01
+        #         image_right[contrib_idx] += 1
+        # except:
+        #     contrib_idx = np.abs(distance_grid - target_distance) < 0.01
+        #     image_right[contrib_idx] += 1
+
+        interp_values_left = np.interp(distance_grid, distance_axis, ph_left, left=0.00001, right=0.00001)
+        interp_values_right = np.interp(distance_grid, distance_axis, ph_right, left=0.00001, right=0.00001)
+        image_left[angle_idx] += interp_values_left[angle_idx]
+        image_right[angle_idx] += interp_values_right[angle_idx]
+
+        # print(x_idx[0], y_idx[0])
+        # for idx in range(len(x_idx)):
+        #     self.image[y_idx[idx], x_idx[idx]] = 1.0
+
+        # Show image or plot
+        # plt.plot(x_coor, y_coor)
+        plt.imshow(self.image)
+        # plt.imshow(20*np.log10(self.image))
+        plt.draw()
+        plt.pause(0.0001)
+        plt.clf()
+
+    def sar_tdbp2(self, ph_left, position, orientation):
+        distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)
+        image_left = self.image[:,:self.N_FFT]
+        yaw = np.arctan2(2.0 * (orientation[3] * orientation[2] + orientation[0] * orientation[1]), 1.0 - 2.0 * (orientation[1] * orientation[1] + orientation[2] * orientation[2]))
+        yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
+
+        angle_axis = np.linspace(0, np.pi, 256) - np.pi/2
+        angle_axis = angle_axis[::-1]
+
+        min_idx = np.argmin(np.abs(angle_axis - yaw))
+        image_left[:,min_idx] = ph_left
+        plt.imshow(self.image)
+        # plt.imshow(20*np.log10(self.image))
+        plt.draw()
+        plt.pause(0.0001)
+        plt.clf()
+
     def sar_loop(self):
         if self.pulse_counter >= self.n_pulses:
             # Same as with the control loop, need to make a copy in case the values change later
-            temp_ph = copy.deepcopy(self.ph)
+            temp_ph_left = copy.deepcopy(self.ph_left)
+            temp_ph_right = copy.deepcopy(self.ph_right)
             temp_position = copy.deepcopy(self.position)
             temp_orientation = copy.deepcopy(self.orientation)
             # self.sar_lidar()
-            self.sar_radar(temp_ph[:,-1], temp_position[:,-1])
+            # self.sar_radar(temp_ph_left[:,-1], temp_position[:,-1])
+            # self.sar_radar_both(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
+            self.sar_tdbp2(temp_ph_left[:,-1], temp_position[:,-1], temp_orientation[:,-1])
             # self.sar_bp(temp_ph, temp_position)
             # self.sar_tdbp(temp_ph, temp_position)
             # self.sar_rda(temp_ph, temp_position)
