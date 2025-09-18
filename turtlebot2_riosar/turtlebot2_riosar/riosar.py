@@ -136,7 +136,8 @@ class RIOSARBasic(Node):
             target_ranges = (target_ranges - range_min) / (range_max - range_min) * self.N_FFT
             target_ranges = target_ranges.astype(np.int32).tolist()
             # print(target_ranges)
-            range_profile[target_ranges] = 1.0
+            if np.all(np.array(target_ranges) >= 0):
+                range_profile[target_ranges] = 1.0
 
             # for target in target_ranges:
             #     range_profile[target] = 0
@@ -149,7 +150,7 @@ class RIOSARBasic(Node):
             
             self.ph_left[:,-1] = range_profile[0:256]
 
-            # Get the LiDAR ranges for "left" side
+            # Get the LiDAR ranges for "right" side
             dist = np.array(temp_scan.ranges[255:285]).reshape(-1)
             range_min = temp_scan.range_min
             range_max = temp_scan.range_max
@@ -181,7 +182,9 @@ class RIOSARBasic(Node):
             target_ranges = (target_ranges - range_min) / (range_max - range_min) * self.N_FFT
             target_ranges = target_ranges.astype(np.int32).tolist()
             # print(target_ranges)
-            range_profile[target_ranges] = 1.0
+    
+            if np.all(np.array(target_ranges) >= 0):
+                range_profile[target_ranges] = 1.0
 
             # for target in target_ranges:
             #     range_profile[target] = 0
@@ -652,6 +655,47 @@ class RIOSARBasic(Node):
         plt.pause(0.0001)
         plt.clf()
 
+    def sar_radar_map(self, ph_left, ph_right, position, orientation):
+        # For now, let's get the distances from the range profile
+        distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)
+        target_idx = ph_left > -1
+        target_distance = distance_axis[target_idx]
+        image_left = self.image[:,:self.N_FFT]
+        image_right = self.image[:,self.N_FFT:]
+        yaw = np.arctan2(2.0 * (orientation[3] * orientation[2] + orientation[0] * orientation[1]), 1.0 - 2.0 * (orientation[1] * orientation[1] + orientation[2] * orientation[2]))
+        # For now, let's get an "image" of the left side of the map
+        # Have the image space be 10m (-5 to 5) by 10m (0 to 10)
+        x = np.linspace(-5, 5, self.N_FFT)
+        y = np.linspace(-7, 7, self.N_FFT*2)
+        # x = np.linspace(-8, 8, self.N_FFT)
+        # y = np.linspace(-6, 6, self.N_FFT*2)
+
+        X, Y = np.meshgrid(x, y)
+
+        # For each target, figure out which distance is within a certain boundary of the image space
+        # In case there's only 1 target
+        distance_grid = np.sqrt((X - position[0])**2 + (Y - position[1])**2)
+        angle_grid = np.arctan2(Y-position[1],X-position[0])
+        angle_idx1_left = ((1.308997 + yaw + np.pi) % (2 * np.pi) - np.pi) <= angle_grid
+        angle_idx2_left = angle_grid <= ((1.832596 + yaw + np.pi) % (2 * np.pi) - np.pi)
+        angle_idx_left = angle_idx1_left & angle_idx2_left
+
+        angle_idx1_right = ((4.450590 + yaw + np.pi) % (2 * np.pi) - np.pi) <= angle_grid
+        angle_idx2_right = angle_grid <= ((4.974188 + yaw + np.pi) % (2 * np.pi) - np.pi)
+        angle_idx_right = angle_idx1_right & angle_idx2_right
+
+
+        interp_values_left = np.interp(distance_grid, distance_axis, ph_left, left=0.00001, right=0.00001)
+        interp_values_right = np.interp(distance_grid, distance_axis, ph_right, left=0.00001, right=0.00001)
+        self.image.T[angle_idx_left] += interp_values_left[angle_idx_left]
+        self.image.T[angle_idx_right] += interp_values_right[angle_idx_right]
+
+        plt.imshow(self.image)
+        # plt.imshow(20*np.log10(self.image))
+        plt.draw()
+        plt.pause(0.0001)
+        plt.clf()
+
     def sar_tdbp2(self, ph_left, position, orientation):
         distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)
         image_left = self.image[:,:self.N_FFT]
@@ -663,8 +707,8 @@ class RIOSARBasic(Node):
 
         min_idx = np.argmin(np.abs(angle_axis - yaw))
         image_left[:,min_idx] = ph_left
-        plt.imshow(self.image)
-        # plt.imshow(20*np.log10(self.image))
+        # plt.imshow(self.image)
+        plt.imshow(20*np.log10(self.image))
         plt.draw()
         plt.pause(0.0001)
         plt.clf()
@@ -679,7 +723,8 @@ class RIOSARBasic(Node):
             # self.sar_lidar()
             # self.sar_radar(temp_ph_left[:,-1], temp_position[:,-1])
             # self.sar_radar_both(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
-            self.sar_tdbp2(temp_ph_left[:,-1], temp_position[:,-1], temp_orientation[:,-1])
+            self.sar_radar_map(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
+            # self.sar_tdbp2(temp_ph_left[:,-1], temp_position[:,-1], temp_orientation[:,-1])
             # self.sar_bp(temp_ph, temp_position)
             # self.sar_tdbp(temp_ph, temp_position)
             # self.sar_rda(temp_ph, temp_position)
