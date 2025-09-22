@@ -391,18 +391,18 @@
         <update_rate>35</update_rate>
         <ray>
           <scan>
-            <horizontal>
-              <samples>1</samples>
-              <resolution>1.000000</resolution>
-              <min_angle>0.000000</min_angle>
-              <max_angle>0.000000</max_angle>
-            </horizontal>
             <!-- <horizontal>
+              <samples>30</samples>
+              <resolution>1.000000</resolution>
+              <min_angle>1.308997</min_angle>
+              <max_angle>1.832596</max_angle>
+            </horizontal> -->
+            <horizontal>
               <samples>360</samples>
               <resolution>1.000000</resolution>
               <min_angle>0.000000</min_angle>
-              <max_angle>6.280000</max_angle>
-            </horizontal> -->
+              <max_angle>6.283185</max_angle>
+            </horizontal>
           </scan>
           <range>
             <!--<min>0.120000</min>-->

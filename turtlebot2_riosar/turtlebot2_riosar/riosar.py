@@ -22,7 +22,8 @@ class RIOSARBasic(Node):
 
         # Subscribers
         self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        # self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
         self.placer_timer = self.create_timer(0.1, self.control_loop)
         self.sar_timer = self.create_timer(0.1, self.sar_loop)
         self.vel_pub = self.create_publisher(TwistWithCovarianceStamped, '/lidar_vel', 10)
@@ -45,7 +46,7 @@ class RIOSARBasic(Node):
         self.orientation = np.zeros((4, self.n_pulses), np.float) # Orientation: X, Y, Z, W
         self.pulse_counter = 0 # Need to keep track of how many control calls been made since the beginning
         # self.image = np.zeros((self.N_FFT, self.N_FFT), np.float) # Single image
-        self.image = np.ones((self.N_FFT, self.N_FFT*2), np.float) * 0.00001 # Left & right image
+        self.image = np.ones((self.N_FFT*2, self.N_FFT*2), np.float) * 0.00001 # Left & right image
 
 
     # For now, let's assume that the scan and odom messages happen relatively close to each other
@@ -658,17 +659,12 @@ class RIOSARBasic(Node):
     def sar_radar_map(self, ph_left, ph_right, position, orientation):
         # For now, let's get the distances from the range profile
         distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)
-        target_idx = ph_left > -1
-        target_distance = distance_axis[target_idx]
-        image_left = self.image[:,:self.N_FFT]
-        image_right = self.image[:,self.N_FFT:]
         yaw = np.arctan2(2.0 * (orientation[3] * orientation[2] + orientation[0] * orientation[1]), 1.0 - 2.0 * (orientation[1] * orientation[1] + orientation[2] * orientation[2]))
-        # For now, let's get an "image" of the left side of the map
-        # Have the image space be 10m (-5 to 5) by 10m (0 to 10)
-        x = np.linspace(-5, 5, self.N_FFT)
-        y = np.linspace(-7, 7, self.N_FFT*2)
-        # x = np.linspace(-8, 8, self.N_FFT)
-        # y = np.linspace(-6, 6, self.N_FFT*2)
+        H, W = self.image.shape
+        # x = np.linspace(-5, 5, W)
+        # y = np.linspace(-7, 7, H)
+        x = np.linspace(-8, 8, W)
+        y = np.linspace(-6, 6, H)
 
         X, Y = np.meshgrid(x, y)
 
