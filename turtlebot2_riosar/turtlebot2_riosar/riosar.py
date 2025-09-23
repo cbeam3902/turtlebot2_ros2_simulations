@@ -22,8 +22,8 @@ class RIOSARBasic(Node):
 
         # Subscribers
         self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
-        # self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        # self.odom_sub = self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
         self.placer_timer = self.create_timer(0.1, self.control_loop)
         self.sar_timer = self.create_timer(0.1, self.sar_loop)
         self.vel_pub = self.create_publisher(TwistWithCovarianceStamped, '/lidar_vel', 10)
@@ -37,6 +37,8 @@ class RIOSARBasic(Node):
         # Variables to use
         self.N_FFT = 256
         self.dist_jump_threshold = 1.0
+        self.x_locations = np.empty(0)
+        self.y_locations = np.empty(0)
 
         # Needed for SAR
         self.n_pulses = 32
@@ -104,7 +106,8 @@ class RIOSARBasic(Node):
 
             self.position[:,-1] = pos
             self.orientation[:,-1] = quat
-
+            self.x_locations = np.append(self.x_locations, pos[0])
+            self.y_locations = np.append(self.y_locations, pos[1])
             # Get the LiDAR ranges for "left" side
             dist = np.array(temp_scan.ranges[75:105]).reshape(-1)
             range_min = temp_scan.range_min
@@ -661,10 +664,12 @@ class RIOSARBasic(Node):
         distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)
         yaw = np.arctan2(2.0 * (orientation[3] * orientation[2] + orientation[0] * orientation[1]), 1.0 - 2.0 * (orientation[1] * orientation[1] + orientation[2] * orientation[2]))
         H, W = self.image.shape
-        # x = np.linspace(-5, 5, W)
-        # y = np.linspace(-7, 7, H)
-        x = np.linspace(-8, 8, W)
-        y = np.linspace(-6, 6, H)
+        x_min, x_max = -5, 5
+        y_min, y_max = -7, 7
+        # x_min, x_max = -8, 8
+        # y_min, y_max = -6, 6
+        x = np.linspace(x_min, x_max, W)
+        y = np.linspace(y_min, y_max, H)
 
         X, Y = np.meshgrid(x, y)
 
@@ -674,11 +679,17 @@ class RIOSARBasic(Node):
         angle_grid = np.arctan2(Y-position[1],X-position[0])
         angle_idx1_left = ((1.308997 + yaw + np.pi) % (2 * np.pi) - np.pi) <= angle_grid
         angle_idx2_left = angle_grid <= ((1.832596 + yaw + np.pi) % (2 * np.pi) - np.pi)
-        angle_idx_left = angle_idx1_left & angle_idx2_left
+        if 1.308997 <= yaw <= 1.832596:
+            angle_idx_left = angle_idx1_left | angle_idx2_left
+        else:
+            angle_idx_left = angle_idx1_left & angle_idx2_left
 
         angle_idx1_right = ((4.450590 + yaw + np.pi) % (2 * np.pi) - np.pi) <= angle_grid
         angle_idx2_right = angle_grid <= ((4.974188 + yaw + np.pi) % (2 * np.pi) - np.pi)
-        angle_idx_right = angle_idx1_right & angle_idx2_right
+        if 4.450590 <= (yaw % (2*np.pi)) <= 4.974188:
+            angle_idx_right = angle_idx1_right | angle_idx2_right
+        else:
+            angle_idx_right = angle_idx1_right & angle_idx2_right
 
 
         interp_values_left = np.interp(distance_grid, distance_axis, ph_left, left=0.00001, right=0.00001)
@@ -686,8 +697,11 @@ class RIOSARBasic(Node):
         self.image.T[angle_idx_left] += interp_values_left[angle_idx_left]
         self.image.T[angle_idx_right] += interp_values_right[angle_idx_right]
 
-        plt.imshow(self.image)
-        # plt.imshow(20*np.log10(self.image))
+        # plt.imshow(self.image, extent=(x_min, x_max, y_max, y_min))
+        plt.imshow(20*np.log10(self.image.T), extent=(x_min, x_max, y_max, y_min), zorder=0)
+        plt.scatter(self.x_locations, self.y_locations, s=40, c='r', zorder=1)
+        plt.xlabel("X (m)")
+        plt.ylabel("Y (m)")
         plt.draw()
         plt.pause(0.0001)
         plt.clf()
@@ -709,6 +723,83 @@ class RIOSARBasic(Node):
         plt.pause(0.0001)
         plt.clf()
 
+    def sar_image2map(self, ph_left, position, orientation):
+        # For now, let's start simple by making an image based on the collection of range profiles, position, and orientation for the left side and work from there
+
+        # To keep this arbitrary, we need to figure out the min/max X and Y coordinates based on:
+        ## the furthest target given by the range profile
+        ## The position and orientation of the robot
+        # From there, an image can be reconstructed based on a distance map
+        distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)        
+        target_idx = ph_left > 0.5
+
+        # target_distance = distance_axis[target_idx]
+
+        x_list = np.zeros(self.n_pulses * 4, np.float)
+        y_list = np.zeros(self.n_pulses * 4, np.float)
+
+        for idx in range(self.n_pulses):
+            yaw = np.arctan2(2.0 * (orientation[3,idx] * orientation[2,idx] + orientation[0,idx] * orientation[1,idx]), 1.0 - 2.0 * (orientation[1,idx] * orientation[1,idx] + orientation[2,idx] * orientation[2,idx]))
+            yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
+
+            r = np.max(distance_axis[target_idx[:,idx]])
+
+            x_list[idx*4 + 0] = position[0,idx] # Position of the robot
+            x_list[idx*4 + 1] = position[0,idx] + r * np.cos(yaw + 1.308997) # Distance away from the robot at 75 deg + yaw
+            x_list[idx*4 + 2] = position[0,idx] + r * np.cos(yaw + 1.570796) # Distance away from the robot at 90 deg + yaw
+            x_list[idx*4 + 3] = position[0,idx] + r * np.cos(yaw + 1.832596) # Distance away from the robot at 105 deg + yaw
+
+            y_list[idx*4 + 0] = position[1,idx] # Position of the robot
+            y_list[idx*4 + 1] = position[1,idx] + r * np.sin(yaw + 1.308997) # Distance away from the robot at 75 deg + yaw
+            y_list[idx*4 + 2] = position[1,idx] + r * np.sin(yaw + 1.570796) # Distance away from the robot at 90 deg + yaw
+            y_list[idx*4 + 3] = position[1,idx] + r * np.sin(yaw + 1.832596) # Distance away from the robot at 105 deg + yaw
+
+        # Get the ratio of the distances to make an image based on it
+        x_min = np.min(x_list)
+        x_max = np.max(x_list)
+        y_min = np.min(y_list)
+        y_max = np.max(y_list)
+
+        ratio = (y_max - y_min) / (x_max - x_min)
+
+        # Generate an image based on the distance ratio
+        num_col = int(ratio * self.N_FFT * 2)
+        num_row = int(self.N_FFT * 2)
+        # print(num_row, num_col)
+        image = np.ones((num_row, num_col), np.float) * 0.00001
+
+        H, W = image.shape
+        x = np.linspace(x_min, x_max, W)
+        y = np.linspace(y_min, y_max, H)
+        X, Y = np.meshgrid(x, y)
+
+        # Generate an image like before
+        for idx in range(self.n_pulses):
+            yaw = np.arctan2(2.0 * (orientation[3,idx] * orientation[2,idx] + orientation[0,idx] * orientation[1,idx]), 1.0 - 2.0 * (orientation[1,idx] * orientation[1,idx] + orientation[2,idx] * orientation[2,idx]))
+            yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
+            # print(yaw)
+            distance_grid = np.sqrt((X - position[0,idx])**2 + (Y - position[1,idx])**2)
+            angle_grid = np.arctan2(Y-position[1,idx],X-position[0,idx])
+            angle_grid = (angle_grid + np.pi) % (2 * np.pi) - np.pi
+            angle_idx1_left = ((1.308997 + yaw + np.pi) % (2 * np.pi) - np.pi) <= angle_grid
+            angle_idx2_left = angle_grid <= ((1.832596 + yaw + np.pi) % (2 * np.pi) - np.pi)
+            if 1.308997 <= yaw <= 1.832596:
+                angle_idx_left = angle_idx1_left | angle_idx2_left
+            else:
+                angle_idx_left = angle_idx1_left & angle_idx2_left
+
+            interp_values_left = np.interp(distance_grid, distance_axis, ph_left[:,idx], left=0.00001, right=0.00001)
+            image[angle_idx_left] += interp_values_left[angle_idx_left]
+
+        plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
+        # plt.imshow(20*np.log10(image), extent=(x_min, x_max, y_max, y_min))
+        plt.xlabel("X (m)")
+        plt.ylabel("Y (m)")
+        plt.plot(self.x_locations, self.y_locations, 'r')
+        plt.draw()
+        plt.pause(0.0001)
+        plt.clf()
+
     def sar_loop(self):
         if self.pulse_counter >= self.n_pulses:
             # Same as with the control loop, need to make a copy in case the values change later
@@ -721,6 +812,7 @@ class RIOSARBasic(Node):
             # self.sar_radar_both(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
             self.sar_radar_map(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
             # self.sar_tdbp2(temp_ph_left[:,-1], temp_position[:,-1], temp_orientation[:,-1])
+            # self.sar_image2map(temp_ph_left, temp_position, temp_orientation)
             # self.sar_bp(temp_ph, temp_position)
             # self.sar_tdbp(temp_ph, temp_position)
             # self.sar_rda(temp_ph, temp_position)
