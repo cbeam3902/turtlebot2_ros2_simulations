@@ -40,6 +40,10 @@ class RIOSARBasic(Node):
         self.x_locations = np.empty(0)
         self.y_locations = np.empty(0)
         self.map_initialize = True
+        self.map_x_min = 0
+        self.map_x_max = 0
+        self.map_y_min = 0
+        self.map_y_max = 0
 
         # Needed for SAR
         self.n_pulses = 32
@@ -734,26 +738,6 @@ class RIOSARBasic(Node):
         distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)        
         target_idx = ph_left > 0.5
 
-        # Map size
-        x_min_map, x_max_map = -5, 5
-        y_min_map, y_max_map = -7, 7
-        # x_min_map, x_max_map = -8, 8
-        # y_min_map, y_max_map = -6, 6
-        ratio = (y_max_map - y_min_map) / (x_max_map - x_min_map)
-        map_col = int(ratio * self.N_FFT * 2)
-        map_row = int(self.N_FFT * 2)
-
-        # Map
-        if self.map_initialize:
-            self.image = np.ones((map_row, map_col), np.float) * 0.00001
-            self.map_initialize = False
-
-        # Map points for later
-        map_x = np.linspace(x_min_map, x_max_map, map_col)
-        map_y = np.linspace(y_min_map, y_max_map, map_row)
-        map_X, map_Y = np.meshgrid(map_x, map_y)
-        map_points = np.array(list(zip(map_X.reshape(-1), map_Y.reshape(-1))))
-
         # target_distance = distance_axis[target_idx]
 
         x_list = np.zeros(self.n_pulses * 4, np.float)
@@ -812,16 +796,83 @@ class RIOSARBasic(Node):
             interp_values_left = np.interp(distance_grid, distance_axis, ph_left[:,idx], left=0.00001, right=0.00001)
             image[angle_idx_left] += interp_values_left[angle_idx_left]
 
-        # Go from image to map space
-        # print(image.shape, W, H)
-        rgi = RegularGridInterpolator((x,y), image.T, bounds_error=False, fill_value=0.00001)
-        values = rgi(map_points)
-        values = values.reshape(self.image.shape)
-        self.image = np.maximum(self.image, values)
+        # Map
+        if self.map_initialize:
+            self.image = image
+            self.map_x_min, self.map_x_max, self.map_y_min, self.map_y_max = x_min, x_max, y_min, y_max
+            self.map_initialize = False
+        else:
+            # Need to check if the size of the map changed, if they did then make a new map and interpolate the values onto it
+            check_x_min = self.map_x_min
+            check_x_max = self.map_x_max
+            check_y_min = self.map_y_min
+            check_y_max = self.map_y_max
+            redo_map = False
+
+            if check_x_min > x_min:
+                check_x_min = x_min
+                redo_map = True
+            if check_x_max < x_max:
+                check_x_max = x_max
+                redo_map = True
+            if check_y_min > y_min:
+                check_y_min = y_min
+                redo_map = True
+            if check_y_max < y_max:
+                check_y_max = y_max
+                redo_map = True
+
+            if redo_map:
+                # Make a interpolator of the old map
+                old_H, old_W = self.image.shape
+                old_map_x = np.linspace(self.map_x_min, self.map_x_max, old_W)
+                old_map_y = np.linspace(self.map_y_min, self.map_y_max, old_H)
+                rgi = RegularGridInterpolator((old_map_x, old_map_y), self.image.T, bounds_error=False, fill_value=0.00001)
+
+                # Make a temporary new map and the distance points to use
+                ratio = (check_y_max - check_y_min) / (check_x_max - check_x_min)
+                map_col = int(ratio * self.N_FFT * 2)
+                map_row = int(self.N_FFT * 2)
+                temp_map = np.ones((map_row, map_col), np.float) * 0.00001
+
+                map_x = np.linspace(check_x_min, check_x_max, map_col)
+                map_y = np.linspace(check_y_min, check_y_max, map_row)
+                map_X, map_Y = np.meshgrid(map_x, map_y)
+                map_points = np.array(list(zip(map_X.reshape(-1), map_Y.reshape(-1))))
+
+                # Assign new values to temp map
+                values = rgi(map_points)
+                # print(map_points.shape)
+                # print(values.shape)
+                values = values.reshape(temp_map.shape)
+                self.image = values
+
+                self.map_x_min, self.map_x_max, self.map_y_min, self.map_y_max = check_x_min, check_x_max, check_y_min, check_y_max
+
+            # Map size
+            x_min_map, x_max_map = self.map_x_min, self.map_x_max
+            y_min_map, y_max_map = self.map_y_min, self.map_y_max
+            # x_min_map, x_max_map = -8, 8
+            # y_min_map, y_max_map = -6, 6
+            ratio = (y_max_map - y_min_map) / (x_max_map - x_min_map)
+            map_col = int(ratio * self.N_FFT * 2)
+            map_row = int(self.N_FFT * 2)
+            # Map points for later
+            map_x = np.linspace(x_min_map, x_max_map, map_col)
+            map_y = np.linspace(y_min_map, y_max_map, map_row)
+            map_X, map_Y = np.meshgrid(map_x, map_y)
+            map_points = np.array(list(zip(map_X.reshape(-1), map_Y.reshape(-1))))
+
+            # Go from image to map space
+            # print(image.shape, W, H)
+            rgi = RegularGridInterpolator((x,y), image.T, bounds_error=False, fill_value=0.00001)
+            values = rgi(map_points)
+            values = values.reshape(self.image.shape)
+            self.image = np.maximum(self.image, values)
 
         # Map
         # plt.imshow(self.image, extent=(x_min_map, x_max_map, y_max_map, y_min_map))
-        plt.imshow(20*np.log10(self.image), extent=(x_min_map, x_max_map, y_max_map, y_min_map))
+        plt.imshow(20*np.log10(self.image), extent=(self.map_x_min, self.map_x_max, self.map_y_max, self.map_y_min))
 
         # Image
         # plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
