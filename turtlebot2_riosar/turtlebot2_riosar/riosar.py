@@ -11,7 +11,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import cdist
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, RegularGridInterpolator
 from numpy.fft import fft, ifft, fftshift, ifftshift, fft2, ifft2
 
 plt.ion()
@@ -39,6 +39,7 @@ class RIOSARBasic(Node):
         self.dist_jump_threshold = 1.0
         self.x_locations = np.empty(0)
         self.y_locations = np.empty(0)
+        self.map_initialize = True
 
         # Needed for SAR
         self.n_pulses = 32
@@ -733,6 +734,26 @@ class RIOSARBasic(Node):
         distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)        
         target_idx = ph_left > 0.5
 
+        # Map size
+        x_min_map, x_max_map = -5, 5
+        y_min_map, y_max_map = -7, 7
+        # x_min_map, x_max_map = -8, 8
+        # y_min_map, y_max_map = -6, 6
+        ratio = (y_max_map - y_min_map) / (x_max_map - x_min_map)
+        map_col = int(ratio * self.N_FFT * 2)
+        map_row = int(self.N_FFT * 2)
+
+        # Map
+        if self.map_initialize:
+            self.image = np.ones((map_row, map_col), np.float) * 0.00001
+            self.map_initialize = False
+
+        # Map points for later
+        map_x = np.linspace(x_min_map, x_max_map, map_col)
+        map_y = np.linspace(y_min_map, y_max_map, map_row)
+        map_X, map_Y = np.meshgrid(map_x, map_y)
+        map_points = np.array(list(zip(map_X.reshape(-1), map_Y.reshape(-1))))
+
         # target_distance = distance_axis[target_idx]
 
         x_list = np.zeros(self.n_pulses * 4, np.float)
@@ -791,11 +812,23 @@ class RIOSARBasic(Node):
             interp_values_left = np.interp(distance_grid, distance_axis, ph_left[:,idx], left=0.00001, right=0.00001)
             image[angle_idx_left] += interp_values_left[angle_idx_left]
 
-        plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
+        # Go from image to map space
+        # print(image.shape, W, H)
+        rgi = RegularGridInterpolator((x,y), image.T, bounds_error=False, fill_value=0.00001)
+        values = rgi(map_points)
+        values = values.reshape(self.image.shape)
+        self.image = np.maximum(self.image, values)
+
+        # Map
+        # plt.imshow(self.image, extent=(x_min_map, x_max_map, y_max_map, y_min_map))
+        plt.imshow(20*np.log10(self.image), extent=(x_min_map, x_max_map, y_max_map, y_min_map))
+
+        # Image
+        # plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
         # plt.imshow(20*np.log10(image), extent=(x_min, x_max, y_max, y_min))
         plt.xlabel("X (m)")
         plt.ylabel("Y (m)")
-        plt.plot(self.x_locations, self.y_locations, 'r')
+        plt.scatter(self.x_locations, self.y_locations, s=40, c='r', zorder=1)
         plt.draw()
         plt.pause(0.0001)
         plt.clf()
@@ -810,9 +843,9 @@ class RIOSARBasic(Node):
             # self.sar_lidar()
             # self.sar_radar(temp_ph_left[:,-1], temp_position[:,-1])
             # self.sar_radar_both(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
-            self.sar_radar_map(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
+            # self.sar_radar_map(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
             # self.sar_tdbp2(temp_ph_left[:,-1], temp_position[:,-1], temp_orientation[:,-1])
-            # self.sar_image2map(temp_ph_left, temp_position, temp_orientation)
+            self.sar_image2map(temp_ph_left, temp_position, temp_orientation)
             # self.sar_bp(temp_ph, temp_position)
             # self.sar_tdbp(temp_ph, temp_position)
             # self.sar_rda(temp_ph, temp_position)
