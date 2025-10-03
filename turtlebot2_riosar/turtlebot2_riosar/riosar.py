@@ -102,6 +102,28 @@ def convert_IQ_to_FFT(test_i,test_q):
 
     return FrequencyDomain
 
+def blob_scaler(image, max_scale=6.0, feather_sigma=3.0):
+    image_dB = 20*np.log10(image)
+
+    # thr_db = np.percentile(image_dB, 95)
+    thr_mask = (image_dB >= np.percentile(image_dB, 95)) & (image_dB < np.percentile(image_dB, 98))
+
+    wall_val = np.percentile(image, 98)
+    obstacle_mask = thr_mask
+
+    obstacle_med = np.median(image[obstacle_mask])
+    scale = float(wall_val / (obstacle_med + 1e-12))
+    scale = np.clip(scale, 1.0, max_scale)
+
+    mask = obstacle_mask.astype(np.float32)
+    mask = gaussian_filter(mask, sigma=feather_sigma)
+    mask = np.clip(mask, 0.0, 1.0)
+
+    image_out = image.copy()
+    image_out = image_out * (1.0 + mask * (scale - 1.0))
+
+    return image_out
+
 class RIOSARBasic(Node):
     def __init__(self):
         super().__init__('riosar_basic')
@@ -118,7 +140,7 @@ class RIOSARBasic(Node):
 
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         # self.odom_sub = self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
-        
+
         self.sar_timer = self.create_timer(0.1, self.sar_loop)
         self.vel_pub = self.create_publisher(TwistWithCovarianceStamped, '/lidar_vel', 10)
 
@@ -948,6 +970,9 @@ class RIOSARBasic(Node):
 
             interp_values_left = np.interp(distance_grid, distance_axis, ph_left[:,idx], left=0.00001, right=0.00001)
             image[angle_idx_left] += interp_values_left[angle_idx_left]
+
+        # Scale image
+        image = blob_scaler(image)
 
         # Map
         if self.map_initialize:
