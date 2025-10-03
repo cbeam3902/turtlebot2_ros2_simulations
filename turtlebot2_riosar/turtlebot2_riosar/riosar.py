@@ -4,7 +4,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped, Twist, TwistWithCovarianceStamped
-from std_msgs.msg import Float32, Float32MultiArray
+from std_msgs.msg import Float32, Float32MultiArray, Int32MultiArray
 from rclpy.time import Time
 import math
 import time
@@ -16,15 +16,109 @@ from numpy.fft import fft, ifft, fftshift, ifftshift, fft2, ifft2
 
 plt.ion()
 
+# Values needed to calculate the FFT
+Fs = 200000
+Fs_CW = 25000
+max_voltage = 3.3
+ADC_bits = 12
+ADC_intervals = 2^ADC_bits
+max_fd = 12500
+mode = 3
+f0 = 5
+BW = 240
+Ns = 200
+Ntar = 5
+Rmax = 100
+MTI = 0
+Mth = 1
+N_FFT = 4096
+c = 299792458
+RampTimeReal = 0.001
+RampTimeReal2 = 0.00075
+factorPresencia_CW = 40
+factorPresencia_FMCW = 22.58
+
+BW_actual = BW * 1000000
+f0_v = f0*1000000000 + BW_actual/2
+max_velocity = c/(2*f0_v) * max_fd
+max_distance = c/(2*BW_actual) * Fs/2 * RampTimeReal
+distance_axis_urad = np.linspace(-max_distance, max_distance, N_FFT)
+
+# True if USB, False if UART
+usb_communication = True
+
+# input parameters
+mode = 2					# sawtooth mode
+f0 = 5						# starting at 24.005 GHz
+BW = 240					# using all the BW available = 240 MHz
+Ns = 200					# 200 samples
+Ntar = 5					# Don't apply as only raw data is desired
+Rmax = 100					# Don't apply as only raw data is desired
+MTI = 0						# MTI mode disable because we want information of static and moving targets
+Mth = 0						# Don't apply as only raw data is desired
+Alpha = 10					# Don't apply to raw signals
+distance_true = True 		# Don't request distance information
+velocity_true = False		# Don't request velocity information
+SNR_true = True 			# Don't request Signal-to-Noise-Ratio information
+I_true = True 				# In-Phase Component (RAW data) requested
+Q_true = True 				# Quadrature Component (RAW data) requested
+movement_true = False 		# Don't apply as only raw data is desired
+
+# Methods for removing zeroes from the end of the I/Q array
+def test_deleteBadSamples(I, Q):
+    # Outputs: I, Q
+    # Appears to be adding the average to the final samples if they're zero
+    # I say appears to be because looking at the average value it's close but different
+    # So far I and Q bad samples appear to be in the same spots at the end (as in I and Q doesn't have different number of bad samples)
+    SumI = np.sum(I)
+    SumQ = np.sum(Q)
+    count = 0
+    index = -1
+    while I[index] == 0:
+        count = count + 1
+        index = index - 1
+        AvgI = SumI / (len(I) - count)
+        AvgQ = SumQ / (len(Q) - count)
+        index = -1
+    while I[index] == 0:
+        I[index] = AvgI
+        Q[index] = AvgQ
+        index = index - 1
+    return I, Q
+
+def convert_IQ_to_FFT(test_i,test_q):
+    test_i, test_q = test_deleteBadSamples(test_i, test_q)
+    test_i = np.subtract(np.multiply(test_i, max_voltage/ADC_intervals), np.mean(np.multiply(test_i, max_voltage/ADC_intervals)))
+    test_q = np.subtract(np.multiply(test_q, max_voltage/ADC_intervals), np.mean(np.multiply(test_q, max_voltage/ADC_intervals)))
+
+    ComplexVector = test_i + 1j*test_q
+
+    ComplexVector = ComplexVector * np.hanning(Ns) * 2 / 3.3
+
+    FrequencyDomain = 2*np.absolute(np.fft.fftshift(np.fft.fft(ComplexVector/Ns, N_FFT)))
+    start = int(N_FFT/2)
+    FrequencyDomain[start] = FrequencyDomain[start - 1]
+    # FrequencyDomain = 20 * np.log10(FrequencyDomain)
+
+    return FrequencyDomain
+
 class RIOSARBasic(Node):
     def __init__(self):
         super().__init__('riosar_basic')
 
         # Subscribers
+
+        # /scan
         self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        self.placer_timer = self.create_timer(0.1, self.control_loop)
+
+        # # urad
+        # self.urad_sub = self.create_subscription(Int32MultiArray, '/urad_IQ', self.urad_callback, 10)
+        # self.urad_timer = self.create_timer(0.1, self.control_loop_urad)
+
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         # self.odom_sub = self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
-        self.placer_timer = self.create_timer(0.1, self.control_loop)
+        
         self.sar_timer = self.create_timer(0.1, self.sar_loop)
         self.vel_pub = self.create_publisher(TwistWithCovarianceStamped, '/lidar_vel', 10)
 
@@ -35,7 +129,13 @@ class RIOSARBasic(Node):
         self.scan_time = time.time()
 
         # Variables to use
+
+        # /scan
         self.N_FFT = 256
+
+        # urad
+        # self.N_FFT = N_FFT//2
+
         self.dist_jump_threshold = 1.0
         self.x_locations = np.empty(0)
         self.y_locations = np.empty(0)
@@ -45,6 +145,10 @@ class RIOSARBasic(Node):
         self.map_y_min = 0
         self.map_y_max = 0
 
+        # uRad processing
+        self.I = None
+        self.Q = None
+
         # Needed for SAR
         self.n_pulses = 32
         self.ph_left = np.zeros((self.N_FFT, self.n_pulses), np.float) # N Pulses of N_FFT ranges
@@ -53,7 +157,7 @@ class RIOSARBasic(Node):
         self.orientation = np.zeros((4, self.n_pulses), np.float) # Orientation: X, Y, Z, W
         self.pulse_counter = 0 # Need to keep track of how many control calls been made since the beginning
         # self.image = np.zeros((self.N_FFT, self.N_FFT), np.float) # Single image
-        self.image = np.ones((self.N_FFT*2, self.N_FFT*2), np.float) * 0.00001 # Left & right image
+        self.image = np.ones((512, 512), np.float) * 0.00001 # Left & right image
 
 
     # For now, let's assume that the scan and odom messages happen relatively close to each other
@@ -88,6 +192,12 @@ class RIOSARBasic(Node):
             
         self.scan_time = curr_time
         self.prev_ranges = np.array(msg.ranges)
+
+    def urad_callback(self, msg):
+        data = msg.data
+        data_len = len(data)
+        self.I = data[:data_len//2]
+        self.Q = data[data_len//2:]
 
     def control_loop(self):
         if self.scan_msg is not None and self.odom_msg is not None:
@@ -223,6 +333,38 @@ class RIOSARBasic(Node):
             # axs[1].plot(range_plot, range_profile)
             # plt.show()
 
+            if self.pulse_counter < self.n_pulses:
+                self.pulse_counter = self.pulse_counter + 1
+    
+    def control_loop_urad(self):
+        if self.I is not None and self.odom_msg is not None:
+            # Get a copy of each message in case they change from the callbacks
+            # Also assume that these are close enough time wise that
+            temp_odom = copy.deepcopy(self.odom_msg)
+            temp_scan = copy.deepcopy(self.scan_msg)
+
+            # Roll the pose and range holders once so the recent "pulse" is at the end
+            self.position = np.roll(self.position, -1, 1)
+            self.orientation = np.roll(self.orientation, -1, 1)
+            self.ph_left = np.roll(self.ph_left, -1, 1)
+            self.ph_right = np.roll(self.ph_right, -1, 1)
+            
+            # Assign the position and orientation at the end
+            pos = temp_odom.pose.pose.position
+            quat = temp_odom.pose.pose.orientation
+
+            pos = np.array([pos.x, pos.y, pos.z])
+            quat = np.array([quat.x, quat.y, quat.z, quat.w])
+
+            self.position[:,-1] = pos
+            self.orientation[:,-1] = quat
+            self.x_locations = np.append(self.x_locations, pos[0])
+            self.y_locations = np.append(self.y_locations, pos[1])
+
+            # Just need to convert the I/Q data into the "positive" half the the FFT domain to get the range profile we care about
+            fft = convert_IQ_to_FFT(self.I, self.Q)
+            self.ph_left[:,-1] = fft[N_FFT//2:]
+            
             if self.pulse_counter < self.n_pulses:
                 self.pulse_counter = self.pulse_counter + 1
     
@@ -735,8 +877,14 @@ class RIOSARBasic(Node):
         ## the furthest target given by the range profile
         ## The position and orientation of the robot
         # From there, an image can be reconstructed based on a distance map
+
+        # /scan
         distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)        
         target_idx = ph_left > 0.5
+
+        # urad
+        # distance_axis = distance_axis_urad[N_FFT//2:]
+        # target_idx = np.argmax(ph_left, 0)
 
         # target_distance = distance_axis[target_idx]
 
@@ -747,7 +895,11 @@ class RIOSARBasic(Node):
             yaw = np.arctan2(2.0 * (orientation[3,idx] * orientation[2,idx] + orientation[0,idx] * orientation[1,idx]), 1.0 - 2.0 * (orientation[1,idx] * orientation[1,idx] + orientation[2,idx] * orientation[2,idx]))
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
 
+            # /scan
             r = np.max(distance_axis[target_idx[:,idx]])
+
+            # urad
+            # r = distance_axis[target_idx[idx]]
 
             x_list[idx*4 + 0] = position[0,idx] # Position of the robot
             x_list[idx*4 + 1] = position[0,idx] + r * np.cos(yaw + 1.308997) # Distance away from the robot at 75 deg + yaw
@@ -768,9 +920,10 @@ class RIOSARBasic(Node):
         ratio = (y_max - y_min) / (x_max - x_min)
 
         # Generate an image based on the distance ratio
-        num_col = int(ratio * self.N_FFT * 2)
-        num_row = int(self.N_FFT * 2)
-        # print(num_row, num_col)
+        num_col = int(ratio * 512)
+        num_row = int(512)
+        # print(num_row, num_col, ratio)
+
         image = np.ones((num_row, num_col), np.float) * 0.00001
 
         H, W = image.shape
@@ -831,9 +984,9 @@ class RIOSARBasic(Node):
 
                 # Make a temporary new map and the distance points to use
                 ratio = (check_y_max - check_y_min) / (check_x_max - check_x_min)
-                map_col = int(ratio * self.N_FFT * 2)
-                map_row = int(self.N_FFT * 2)
-                temp_map = np.ones((map_row, map_col), np.float) * 0.00001
+                map_col = int(ratio * 512)
+                map_row = int(512)
+                # temp_map = np.ones((map_row, map_col), np.float) * 0.00001
 
                 map_x = np.linspace(check_x_min, check_x_max, map_col)
                 map_y = np.linspace(check_y_min, check_y_max, map_row)
@@ -844,7 +997,7 @@ class RIOSARBasic(Node):
                 values = rgi(map_points)
                 # print(map_points.shape)
                 # print(values.shape)
-                values = values.reshape(temp_map.shape)
+                values = values.reshape((map_row, map_col))
                 self.image = values
 
                 self.map_x_min, self.map_x_max, self.map_y_min, self.map_y_max = check_x_min, check_x_max, check_y_min, check_y_max
@@ -855,8 +1008,8 @@ class RIOSARBasic(Node):
             # x_min_map, x_max_map = -8, 8
             # y_min_map, y_max_map = -6, 6
             ratio = (y_max_map - y_min_map) / (x_max_map - x_min_map)
-            map_col = int(ratio * self.N_FFT * 2)
-            map_row = int(self.N_FFT * 2)
+            map_col = int(ratio * 512)
+            map_row = int(512)
             # Map points for later
             map_x = np.linspace(x_min_map, x_max_map, map_col)
             map_y = np.linspace(y_min_map, y_max_map, map_row)
@@ -872,14 +1025,25 @@ class RIOSARBasic(Node):
 
         # Map
         # plt.imshow(self.image, extent=(x_min_map, x_max_map, y_max_map, y_min_map))
-        plt.imshow(20*np.log10(self.image), extent=(self.map_x_min, self.map_x_max, self.map_y_max, self.map_y_min))
+        # plt.imshow(20*np.log10(self.image), extent=(self.map_x_min, self.map_x_max, self.map_y_max, self.map_y_min))
 
         # Image
-        # plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
+        # plt.subplot(1,3,1)
+        plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
         # plt.imshow(20*np.log10(image), extent=(x_min, x_max, y_max, y_min))
         plt.xlabel("X (m)")
         plt.ylabel("Y (m)")
         plt.scatter(self.x_locations, self.y_locations, s=40, c='r', zorder=1)
+
+        # urad only
+        # plt.subplot(1,3,2)
+        # plt.plot(np.arange(len(ph_left[:,-1])), ph_left[:,-1])
+        # # plt.plot(np.arange(len(ph_left[:,-1])), 20*np.log10(ph_left[:,-1]))
+
+        # plt.subplot(1,3,3)
+        # plt.plot(np.arange(len(ph_left[:target_idx[-1]+1,-1])), ph_left[:target_idx[-1]+1,-1])
+        # # plt.plot(np.arange(len(ph_left[:target_idx[-1]+1,-1])), 20*np.log10(ph_left[:target_idx[-1]+1,-1]))
+
         plt.draw()
         plt.pause(0.0001)
         plt.clf()
