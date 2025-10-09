@@ -12,6 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import cdist
 from scipy.interpolate import interp1d, RegularGridInterpolator
+from scipy.ndimage import gaussian_filter
 from numpy.fft import fft, ifft, fftshift, ifftshift, fft2, ifft2
 
 plt.ion()
@@ -106,7 +107,7 @@ def blob_scaler(image, max_scale=6.0, feather_sigma=3.0):
     image_dB = 20*np.log10(image)
 
     # thr_db = np.percentile(image_dB, 95)
-    thr_mask = (image_dB >= np.percentile(image_dB, 95)) & (image_dB < np.percentile(image_dB, 98))
+    thr_mask = (image_dB >= np.percentile(image_dB, 95)) # & (image_dB < np.percentile(image_dB, 98))
 
     wall_val = np.percentile(image, 98)
     obstacle_mask = thr_mask
@@ -954,6 +955,12 @@ class RIOSARBasic(Node):
         X, Y = np.meshgrid(x, y)
 
         # Generate an image like before
+
+        # Add in the antenna gain
+        ## Just a lambda function for simplicity
+        angle_func = lambda x: -0.1686057 * x ** 2 + 5.62
+        # angle_func = lambda x: 1
+
         for idx in range(self.n_pulses):
             yaw = np.arctan2(2.0 * (orientation[3,idx] * orientation[2,idx] + orientation[0,idx] * orientation[1,idx]), 1.0 - 2.0 * (orientation[1,idx] * orientation[1,idx] + orientation[2,idx] * orientation[2,idx]))
             yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
@@ -963,13 +970,19 @@ class RIOSARBasic(Node):
             angle_grid = (angle_grid + np.pi) % (2 * np.pi) - np.pi
             angle_idx1_left = ((1.308997 + yaw + np.pi) % (2 * np.pi) - np.pi) <= angle_grid
             angle_idx2_left = angle_grid <= ((1.832596 + yaw + np.pi) % (2 * np.pi) - np.pi)
+
+            angles_rel = (angle_grid - yaw + np.pi) % (2*np.pi) - np.pi
+            angles_val = angle_func(angles_rel - np.pi/2)
+
             if 1.308997 <= yaw <= 1.832596:
                 angle_idx_left = angle_idx1_left | angle_idx2_left
+                angle_idx_left = angle_idx_left.astype(np.float32)
             else:
                 angle_idx_left = angle_idx1_left & angle_idx2_left
+                angle_idx_left = angle_idx_left.astype(np.float32)
 
             interp_values_left = np.interp(distance_grid, distance_axis, ph_left[:,idx], left=0.00001, right=0.00001)
-            image[angle_idx_left] += interp_values_left[angle_idx_left]
+            image += interp_values_left * angle_idx_left * angles_val
 
         # Scale image
         image = blob_scaler(image)
@@ -978,6 +991,8 @@ class RIOSARBasic(Node):
         if self.map_initialize:
             self.image = image
             self.map_x_min, self.map_x_max, self.map_y_min, self.map_y_max = x_min, x_max, y_min, y_max
+            x_min_map, x_max_map = self.map_x_min, self.map_x_max
+            y_min_map, y_max_map = self.map_y_min, self.map_y_max
             self.map_initialize = False
         else:
             # Need to check if the size of the map changed, if they did then make a new map and interpolate the values onto it
@@ -1046,15 +1061,16 @@ class RIOSARBasic(Node):
             rgi = RegularGridInterpolator((x,y), image.T, bounds_error=False, fill_value=0.00001)
             values = rgi(map_points)
             values = values.reshape(self.image.shape)
-            self.image = np.maximum(self.image, values)
+            # self.image = np.maximum(self.image, values)
+            self.image = np.add(self.image, values)
 
         # Map
         # plt.imshow(self.image, extent=(x_min_map, x_max_map, y_max_map, y_min_map))
-        # plt.imshow(20*np.log10(self.image), extent=(self.map_x_min, self.map_x_max, self.map_y_max, self.map_y_min))
+        plt.imshow(20*np.log10(self.image), extent=(self.map_x_min, self.map_x_max, self.map_y_max, self.map_y_min))
 
         # Image
         # plt.subplot(1,3,1)
-        plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
+        # plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
         # plt.imshow(20*np.log10(image), extent=(x_min, x_max, y_max, y_min))
         plt.xlabel("X (m)")
         plt.ylabel("Y (m)")
