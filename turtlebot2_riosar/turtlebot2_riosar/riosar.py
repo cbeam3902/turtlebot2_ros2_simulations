@@ -958,7 +958,9 @@ class RIOSARBasic(Node):
 
         # Add in the antenna gain
         ## Just a lambda function for simplicity
-        angle_func = lambda x: -0.1686057 * x ** 2 + 5.62
+        # angle_func = lambda x: -0.1686057 * x ** 2 + 5.62
+        # angle_func = lambda x: -72.951256569* x ** 2 + 15 # dB version
+        angle_func = lambda x: -52.361334268324 * x ** 2 + 5.6234
         # angle_func = lambda x: 1
 
         for idx in range(self.n_pulses):
@@ -1065,13 +1067,14 @@ class RIOSARBasic(Node):
             self.image = np.add(self.image, values)
 
         # Map
-        # plt.imshow(self.image, extent=(x_min_map, x_max_map, y_max_map, y_min_map))
-        plt.imshow(20*np.log10(self.image), extent=(self.map_x_min, self.map_x_max, self.map_y_max, self.map_y_min))
+        plt.imshow(self.image, extent=(x_min_map, x_max_map, y_max_map, y_min_map))
+        # plt.imshow(20*np.log10(self.image), extent=(self.map_x_min, self.map_x_max, self.map_y_max, self.map_y_min))
 
         # Image
         # plt.subplot(1,3,1)
         # plt.imshow(image, extent=(x_min, x_max, y_max, y_min))
         # plt.imshow(20*np.log10(image), extent=(x_min, x_max, y_max, y_min))
+        plt.colorbar()
         plt.xlabel("X (m)")
         plt.ylabel("Y (m)")
         plt.scatter(self.x_locations, self.y_locations, s=40, c='r', zorder=1)
