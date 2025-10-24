@@ -9,16 +9,20 @@ class ImageLocalization():
         self.H = -1
         self.W = -1
         self.mpp = -1
+        self.mx_min = -1
+        self.my_min = -1
 
         self.dist_holder = None
         self.angle_array = None
         self.numAngles = -1
 
-    def genMapFromImage(self, image_string, numAngles, mpp=-1):
+    def genMapFromImage(self, image_string, numAngles, mpp=-1, mx_min=-1, my_min=-1):
         # Read image and get width and height (image will be black/white so color technically doesn't matter)
         self.img = cv.imread(image_string) # NOTE: (H, W, D)
         self.H, self.W, _ = self.img.shape
         self.mpp = mpp
+        self.mx_min = mx_min
+        self.my_min = my_min
 
         # Set up the angle array
         self.numAngles = numAngles
@@ -98,6 +102,14 @@ class ImageLocalization():
         est_x = est_idx % self.W
         est_y = est_idx // self.W
 
+        # Convert pixel coordinates into world coordinates
+        if not pixels:
+            # est_x = self.mx_min + est_x * self.mpp
+            # est_y = self.my_min + est_y * self.mpp
+            temp = est_x.copy()
+            est_x = self.mx_min + (self.H - est_y - 1) * self.mpp
+            est_y = self.my_min + (self.W - temp - 1) * self.mpp
+
         # Get the estimated orientation
         k = 1
         while mag_ranges[k, 0] < 1e-6:
@@ -114,11 +126,11 @@ class ImageLocalization():
 
     def saveDistanceMap(self, map_name):
         with open(map_name, 'wb') as f:
-            pickle.dump([self.H, self.W, self.mpp, self.dist_holder, self.angle_array, self.numAngles], f)
+            pickle.dump([self.H, self.W, self.mpp, self.mx_min, self.my_min, self.dist_holder, self.angle_array, self.numAngles], f)
     
     def loadDistanceMap(self, map_name):
         with open(map_name, 'rb') as f:
-            self.H, self.W, self.mpp, self.dist_holder, self.angle_array, self.numAngles = pickle.load(f)
+            self.H, self.W, self.mpp, self.mx_min, self.my_min, self.dist_holder, self.angle_array, self.numAngles = pickle.load(f)
 
 
 if __name__ == "__main__":
@@ -126,52 +138,52 @@ if __name__ == "__main__":
 
     # Generate a distance map
     il = ImageLocalization()
-    il.genMapFromImage("map4.png", 32)
+    il.genMapFromImage("obstacle_map.png", 32, mpp=0.070073, mx_min=-4.77, my_min=-7)
 
-    # Localize to a random coordinate
-    print("Test:")
-    shift = np.random.randint(il.numAngles-1) + 1
-    x = np.random.randint(il.W)
-    y = np.random.randint(il.H)
+    # # Localize to a random coordinate
+    # print("Test:")
+    # shift = np.random.randint(il.numAngles-1) + 1
+    # x = np.random.randint(il.W)
+    # y = np.random.randint(il.H)
 
-    while il.img[y,x,0] == 0:
-        x = np.random.randint(il.W)
-        y = np.random.randint(il.H)
+    # while il.img[y,x,0] == 0:
+    #     x = np.random.randint(il.W)
+    #     y = np.random.randint(il.H)
     
-    print(f"\tPixel Coordinate: ({y},{x})")
-    print(f"\tArray shift: ({shift}, {il.angle_array[shift]} rad.)")
+    # print(f"\tPixel Coordinate: ({y},{x})")
+    # print(f"\tArray shift: ({shift}, {il.angle_array[shift]} rad.)")
 
-    ranges = il.dist_holder[:, y * il.W + x].copy()
-    ranges = np.roll(ranges, -shift) # Because apparently numpy does it backwards
-    ranges = ranges.reshape((-1,1))
-    est_x, est_y, est_theta = il.estimateLocalization(ranges, pixels=True)
+    # ranges = il.dist_holder[:, y * il.W + x].copy()
+    # ranges = np.roll(ranges, -shift) # Because apparently numpy does it backwards
+    # ranges = ranges.reshape((-1,1))
+    # est_x, est_y, est_theta = il.estimateLocalization(ranges, pixels=True)
 
-    print("\nOutcome:")
-    print(f"\tEstimated Coordinate: ({est_y}, {est_x})")
-    print(f"\tEstimate theta: {est_theta}")
+    # print("\nOutcome:")
+    # print(f"\tEstimated Coordinate: ({est_y}, {est_x})")
+    # print(f"\tEstimate theta: {est_theta}")
 
-    # Test some QoL functions (because generating everytime will take a while rather than loading from a txt file or something)
-    il.saveDistanceMap("test.pkl")
-    il.loadDistanceMap("test.pkl")
+    # # Test some QoL functions (because generating everytime will take a while rather than loading from a txt file or something)
+    il.saveDistanceMap("obstacle_map.pkl")
+    # il.loadDistanceMap("obstacle_map.pkl")
 
-    # Test2
-    print("\nTest 2:")
-    shift = np.random.randint(il.numAngles-1) + 1
-    x = np.random.randint(il.W)
-    y = np.random.randint(il.H)
+    # # Test2
+    # print("\nTest 2:")
+    # shift = np.random.randint(il.numAngles-1) + 1
+    # x = np.random.randint(il.W)
+    # y = np.random.randint(il.H)
 
-    while il.img[y,x,0] == 0:
-        x = np.random.randint(il.W)
-        y = np.random.randint(il.H)
+    # while il.img[y,x,0] == 0:
+    #     x = np.random.randint(il.W)
+    #     y = np.random.randint(il.H)
     
-    print(f"\tPixel Coordinate: ({y},{x})")
-    print(f"\tArray shift: ({shift}, {il.angle_array[shift]} rad.)")
+    # print(f"\tPixel Coordinate: ({y},{x})")
+    # print(f"\tArray shift: ({shift}, {il.angle_array[shift]} rad.)")
 
-    ranges = il.dist_holder[:, y * il.W + x].copy()
-    ranges = np.roll(ranges, -shift) # Because apparently numpy does it backwards
-    ranges = ranges.reshape((-1,1))
-    est_x, est_y, est_theta = il.estimateLocalization(ranges, pixels=True)
+    # ranges = il.dist_holder[:, y * il.W + x].copy()
+    # ranges = np.roll(ranges, -shift) # Because apparently numpy does it backwards
+    # ranges = ranges.reshape((-1,1))
+    # est_x, est_y, est_theta = il.estimateLocalization(ranges, pixels=True)
 
-    print("\nOutcome:")
-    print(f"\tEstimated Coordinate: ({est_y}, {est_x})")
-    print(f"\tEstimate theta: {est_theta}")
+    # print("\nOutcome:")
+    # print(f"\tEstimated Coordinate: ({est_y}, {est_x})")
+    # print(f"\tEstimate theta: {est_theta}")

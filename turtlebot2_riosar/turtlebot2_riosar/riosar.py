@@ -15,6 +15,8 @@ from scipy.interpolate import interp1d, RegularGridInterpolator
 from scipy.ndimage import gaussian_filter
 from numpy.fft import fft, ifft, fftshift, ifftshift, fft2, ifft2
 
+from .image_localization import ImageLocalization
+
 plt.ion()
 
 # Values needed to calculate the FFT
@@ -182,6 +184,27 @@ class RIOSARBasic(Node):
         # self.image = np.zeros((self.N_FFT, self.N_FFT), np.float) # Single image
         self.image = np.ones((512, 512), np.float) * 0.00001 # Left & right image
 
+        # Image Localization
+        # NOTE: Please get a map generated before running this
+
+        self.il = ImageLocalization()
+        self.il.loadDistanceMap("/home/grey/ros_ws/src/turtlebot2_ros2_simulations/turtlebot2_riosar/turtlebot2_riosar/obstacle_map.pkl")
+
+    def get_coord_from_ranges(self):
+        ranges = np.array(self.scan_msg.ranges)
+        angle_idx = np.linspace(0, 360, self.il.numAngles, endpoint=False).astype(np.uint32)
+        ranges = ranges[angle_idx].reshape(-1,1)
+
+        est_x, est_y, est_theta = self.il.estimateLocalization(ranges)
+
+        quat = self.odom_msg.pose.pose.orientation
+        orientation = np.array([quat.x, quat.y, quat.z, quat.w])
+        yaw = np.arctan2(2.0 * (orientation[3] * orientation[2] + orientation[0] * orientation[1]), 1.0 - 2.0 * (orientation[1] * orientation[1] + orientation[2] * orientation[2]))
+        
+        print(f"GT coordinates: ({self.odom_msg.pose.pose.position.x}, {self.odom_msg.pose.pose.position.y})")
+        print(f"GT orientation: {yaw} rad")
+        print(f"Estimated coordinates: ({est_x}, {est_y})")
+        print(f"Estimated orientation: {est_theta} rad")
 
     # For now, let's assume that the scan and odom messages happen relatively close to each other
     def odom_callback(self, msg):
@@ -1104,12 +1127,13 @@ class RIOSARBasic(Node):
             # self.sar_radar_both(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
             # self.sar_radar_map(temp_ph_left[:,-1], temp_ph_right[:,-1], temp_position[:,-1], temp_orientation[:,-1])
             # self.sar_tdbp2(temp_ph_left[:,-1], temp_position[:,-1], temp_orientation[:,-1])
-            self.sar_image2map(temp_ph_left, temp_position, temp_orientation)
+            # self.sar_image2map(temp_ph_left, temp_position, temp_orientation)
             # self.sar_bp(temp_ph, temp_position)
             # self.sar_tdbp(temp_ph, temp_position)
             # self.sar_rda(temp_ph, temp_position)
             # self.sar_rma_omega_k(temp_ph, temp_position)
             # self.sar_rc(temp_ph)
+            self.get_coord_from_ranges()
 
         
 def main(args=None):
