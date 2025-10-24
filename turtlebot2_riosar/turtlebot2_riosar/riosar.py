@@ -189,17 +189,32 @@ class RIOSARBasic(Node):
 
         self.il = ImageLocalization()
         self.il.loadDistanceMap("/home/grey/ros_ws/src/turtlebot2_ros2_simulations/turtlebot2_riosar/turtlebot2_riosar/obstacle_map.pkl")
+        self.ranges = np.zeros((self.il.numAngles,1))
 
     def get_coord_from_ranges(self):
-        ranges = np.array(self.scan_msg.ranges)
-        angle_idx = np.linspace(0, 360, self.il.numAngles, endpoint=False).astype(np.uint32)
-        ranges = ranges[angle_idx].reshape(-1,1)
-
-        est_x, est_y, est_theta = self.il.estimateLocalization(ranges)
-
         quat = self.odom_msg.pose.pose.orientation
         orientation = np.array([quat.x, quat.y, quat.z, quat.w])
         yaw = np.arctan2(2.0 * (orientation[3] * orientation[2] + orientation[0] * orientation[1]), 1.0 - 2.0 * (orientation[1] * orientation[1] + orientation[2] * orientation[2]))
+
+        yaw = yaw % (2 * np.pi)
+
+        ranges = np.array(self.scan_msg.ranges)
+        angle_idx = np.linspace(0, 360, self.il.numAngles, endpoint=False).astype(np.uint32)
+        ranges = ranges[angle_idx].reshape(-1,1)
+        est_x, est_y, est_theta = self.il.estimateLocalization(ranges)
+
+        # distance_axis = np.linspace(self.scan_msg.range_min, self.scan_msg.range_max, self.N_FFT)        
+        # target_idx = self.ph_left[:,-1] > 0.5
+
+        # dist = distance_axis[target_idx]
+        # max_dist = np.max(dist)
+        
+        # angle_array = np.linspace(0, 2*np.pi, self.il.numAngles, endpoint=False)
+        # angle_array = np.abs(angle_array - yaw)
+        # self.ranges[np.where(angle_array < 1e-2),0] = max_dist
+
+        # est_x, est_y, est_theta = self.il.estimateLocalization(self.ranges)
+        # print(self.ranges.reshape(1,-1))
         
         print(f"GT coordinates: ({self.odom_msg.pose.pose.position.x}, {self.odom_msg.pose.pose.position.y})")
         print(f"GT orientation: {yaw} rad")
